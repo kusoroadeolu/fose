@@ -18,8 +18,6 @@ interface Request<E> {
 
     boolean lpDone();
 
-    void spNextNull();
-
     Request<E> lvNext();
 
 }

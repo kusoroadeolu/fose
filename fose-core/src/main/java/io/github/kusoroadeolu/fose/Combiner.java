@@ -35,6 +35,8 @@ class CombinerFields<E> extends CombinerPad2<E> {
     Request<E> head;
     final E item;
     final int maxOps; //max operations per combining session
+
+    //metrics for benchmarks, could expose em?
     int _uncombined;
     int _passes;
 
@@ -137,7 +139,6 @@ public class Combiner<E> extends CombinerPad3<E> {
                 misses = 0;
             }
         }
-
         return (R) req.result();
     }
 
@@ -201,7 +202,6 @@ public class Combiner<E> extends CombinerPad3<E> {
 
         for (int ops = 0; ops < maxOps && (curr = prev.lvNext()) != null; ++ops) {
             curr.doFn(item);
-            prev.spNextNull();
             prev = curr;
         }
 

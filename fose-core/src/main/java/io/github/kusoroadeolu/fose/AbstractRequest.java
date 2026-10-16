@@ -18,7 +18,9 @@ abstract class AbstractRequest<E> implements Request<E> {
         public void doFn(E e) {
             if (!done) {
                 try {
-                    fn.apply(e);
+                   result = fn.apply(e);
+                   fn = null;
+                   next = null;
                 }catch (Exception _) {} //TODO add fo
                 DONE.setRelease(this, true);
             }
@@ -55,10 +57,6 @@ abstract class AbstractRequest<E> implements Request<E> {
         }
 
 
-        @Override
-        public void spNextNull() {
-            this.next = null;
-        }
 
         @Override
         public Request<E> lvNext() {
