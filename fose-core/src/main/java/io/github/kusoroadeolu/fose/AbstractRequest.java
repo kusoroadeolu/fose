@@ -45,7 +45,7 @@ abstract class AbstractRequest<E> implements Request<E> {
         }
 
         @Override
-        public boolean done() {
+        public boolean laDone() {
             return (boolean) DONE.getAcquire(this);
         }
 
@@ -61,7 +61,7 @@ abstract class AbstractRequest<E> implements Request<E> {
         }
 
         @Override
-        public Request<E> next() {
+        public Request<E> lvNext() {
             return (Request<E>) NEXT.getVolatile(this);
         }
 

@@ -14,13 +14,13 @@ interface Request<E> {
 
     Function<E, Object> fn();
 
-    boolean done();
+    boolean laDone();
 
     boolean lpDone();
 
     void spNextNull();
 
-    Request<E> next();
+    Request<E> lvNext();
 
 }
 

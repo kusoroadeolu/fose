@@ -3,6 +3,7 @@ package io.github.kusoroadeolu.fose;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.StampedLock;
 import java.util.function.Function;
 
@@ -24,19 +25,10 @@ class CombinerPad1 extends CombinerLockField {
 
 class CombinerWaiterField<E> extends CombinerPad1 {
     volatile Request<E> tail;
-    final IdleStrategy strategy;
-
-    public CombinerWaiterField(IdleStrategy strategy) {
-        this.strategy = strategy;
-    }
 }
 
 class CombinerPad2<E> extends CombinerWaiterField<E> {
     long a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16;
-
-    public CombinerPad2(IdleStrategy strategy) {
-        super(strategy);
-    }
 }
 
 class CombinerFields<E> extends CombinerPad2<E> {
@@ -46,8 +38,7 @@ class CombinerFields<E> extends CombinerPad2<E> {
     int _uncombined;
     int _passes;
 
-    public CombinerFields(E item, int maxOps, IdleStrategy strategy) {
-        super(strategy);
+    public CombinerFields(E item, int maxOps) {
         this.item = item;
         this.maxOps = maxOps;
     }
@@ -57,26 +48,26 @@ class CombinerPad3<E> extends CombinerFields<E> {
     long a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15;
 
 
-    public CombinerPad3(E item, int maxOps, IdleStrategy strategy) {
-        super(item, maxOps, strategy);
+    public CombinerPad3(E item, int maxOps) {
+        super(item, maxOps);
     }
 }
 
 public class Combiner<E> extends CombinerPad3<E> {
 
-    private static final int maxCombiningOperations = 100;
-    private static final boolean isUniprocessor = Runtime.getRuntime().availableProcessors() == 1;
+    private static final int MAX_COMBINING_OPERATIONS = 100;
+    private static final int NCPU = Runtime.getRuntime().availableProcessors();
+    private static final boolean UNIPROCESSOR = NCPU == 1;
+    private static final int SPIN_STEPS = 10;
+    private static final int MAX_STEPS = SPIN_STEPS + 4;
+    private static final int PARK_NS = 1_000; //should this be more? maybe 1M, 1K ns performs alright, no need tbh
 
     public Combiner(E item) {
-        super(item, maxCombiningOperations, IdleStrategy.spin());
+        super(item, MAX_COMBINING_OPERATIONS);
         head = tail = new BaseRequest<>(null);
     }
 
-    public Combiner(E item, IdleStrategy strategy) {
-        super(item, maxCombiningOperations, strategy);
-        head = tail = new BaseRequest<>(null);
-    }
-
+    //these lock/unlock api's are easy to misuse? should I avoid them. Honestly doesn't matter
     public void lock() {
         lock.lock();
     }
@@ -85,10 +76,19 @@ public class Combiner<E> extends CombinerPad3<E> {
         lock.unlock();
     }
 
-
-
     public  <R> R accept(Function<E, R> function) {
         var lock = this.lock;
+
+        //if is uniprocessor, don't bother combining
+        if (UNIPROCESSOR) {
+            lock.lock();
+            try {
+               return function.apply(item);
+            }finally {
+                lock.unlock();
+            }
+        }
+
         Function<E, Object> fn = (Function<E, Object>) function;
         if (lock.tryLock()) {
             try {
@@ -104,8 +104,25 @@ public class Combiner<E> extends CombinerPad3<E> {
 
         int misses = 0;
         int steps = 1;
+
         for (;;) {
-            if (awaitCombining(req, steps)) return (R) req.result();
+
+            if (steps < SPIN_STEPS) {
+                //spin from steps 1 to 10
+                int maxSpins = 1 << steps;
+                for (int spins = 0; spins++ < maxSpins;) {
+                    Thread.onSpinWait();
+                    if (req.laDone()) break;
+                }
+
+            } else if (steps < MAX_STEPS) { //yield from steps 10 to 13 (4 yields)
+                Thread.yield();
+                if (req.laDone()) break;
+            } else {
+                LockSupport.parkNanos(PARK_NS); //not a guaranteed 0.1ms park though, can be spuriously woken up
+                //maybe should add a loop that handles how much time left to park
+                if (req.laDone()) break;
+            }
 
             if (lock.tryLock()) {
                 try {
@@ -116,10 +133,12 @@ public class Combiner<E> extends CombinerPad3<E> {
             }
 
             if (misses++ == 2) {
-                steps = Math.min(steps + 1, 10);
+                steps = Math.min(steps + 1, MAX_STEPS);
                 misses = 0;
             }
         }
+
+        return (R) req.result();
     }
 
 
@@ -137,17 +156,6 @@ public class Combiner<E> extends CombinerPad3<E> {
         request.spDone();
         combinePass();
         return result;
-    }
-
-    boolean awaitCombining(Request<E> req, int steps) {
-        boolean done = false;
-        // final IdleStrategy strategy = this.strategy;
-        int maxSpins = 1 << steps;
-        for (int spins = 0; spins++ < maxSpins  && !(done = req.done());) {
-            Thread.onSpinWait();
-        }
-
-        return done;
     }
 
     public int uncombined() {
@@ -191,7 +199,7 @@ public class Combiner<E> extends CombinerPad3<E> {
         Request<E> curr;
         final E item = this.item;
 
-        for (int ops = 0; ops < maxOps && (curr = prev.next()) != null; ++ops) {
+        for (int ops = 0; ops < maxOps && (curr = prev.lvNext()) != null; ++ops) {
             curr.doFn(item);
             prev.spNextNull();
             prev = curr;
@@ -217,7 +225,7 @@ public class Combiner<E> extends CombinerPad3<E> {
             HEAD = lookup.findVarHandle(Combiner.class, "head", Request.class);
             TAIL = lookup.findVarHandle(Combiner.class, "tail", Request.class);
         }catch (NoSuchFieldException | IllegalAccessException e) {
-            throw new RuntimeException(e);
+            throw new ExceptionInInitializerError(e);
         }
     }
 }

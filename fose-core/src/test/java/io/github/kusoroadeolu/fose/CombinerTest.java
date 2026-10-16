@@ -17,21 +17,10 @@ class CombinerTest {
         }
     }
 
-    static class BriefSpinStrategy implements IdleStrategy {
-
-        private static final int MAX_SPINS = 6;
-
-        @Override
-        public int idle(int idleCount) {
-            if (idleCount >= MAX_SPINS) return -1;
-            else return  ++idleCount;
-        }
-    }
-
     @Test
     public void sanityCombinerTest() {
         Lincheck.runConcurrentTest(() -> {
-            Combiner<Adder> c = new Combiner<>(new Adder(), new BriefSpinStrategy());
+            Combiner<Adder> c = new Combiner<>(new Adder());
             Runnable inc = () -> c.accept(Adder::add);
             Thread t = new Thread(inc);
             Thread t1 = new Thread(inc);
