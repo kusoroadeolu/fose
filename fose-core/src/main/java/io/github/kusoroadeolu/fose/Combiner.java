@@ -105,22 +105,22 @@ public class Combiner<E> extends CombinerPad3<E> {
         int misses = 0;
         int steps = 1;
 
-        for (;;) {
+        outer: for (;;) {
 
             if (steps < SPIN_STEPS) {
                 //spin from steps 1 to 10
                 int maxSpins = 1 << steps;
                 for (int spins = 0; spins++ < maxSpins;) {
                     Thread.onSpinWait();
-                    if (req.laDone()) break;
+                    if (req.laDone()) break outer;
                 }
 
             } else if (steps < MAX_STEPS) { //yield from steps 10 to 13 (4 yields)
                 Thread.yield();
                 if (req.laDone()) break;
             } else {
-                LockSupport.parkNanos(PARK_NS); //not a guaranteed 0.1ms park though, can be spuriously woken up
-                //maybe should add a loop that handles how much time left to park
+                LockSupport.parkNanos(PARK_NS); //not a guaranteed 0.1ms park though, can be spuriously woken up or the park can be 1ms on some platforms
+                //maybe should add a loop that handles how much time left to park, though probably not an issue
                 if (req.laDone()) break;
             }
 
@@ -216,13 +216,11 @@ public class Combiner<E> extends CombinerPad3<E> {
     }
 
 
-    static final VarHandle HEAD;
     static final VarHandle TAIL;
 
     static {
         var lookup = MethodHandles.lookup();
         try {
-            HEAD = lookup.findVarHandle(Combiner.class, "head", Request.class);
             TAIL = lookup.findVarHandle(Combiner.class, "tail", Request.class);
         }catch (NoSuchFieldException | IllegalAccessException e) {
             throw new ExceptionInInitializerError(e);
