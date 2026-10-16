@@ -158,7 +158,10 @@ public class Combiner<E> extends CombinerPad3<E> {
     }
 
     <R> R doCombineNode(Node<E> node) {
-        if (node.lpDone()) return (R) node.result();
+        if (node.lpDone()) {
+            if (node.error() != null) throw new RuntimeException(node.error());
+            else return (R) node.result();
+        }
         final E item = this.item;
         try {
             return  (R) node.fn.apply(item);
