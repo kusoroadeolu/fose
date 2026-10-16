@@ -24,7 +24,7 @@ class CombinerPad1 extends CombinerLockField {
 }
 
 class CombinerWaiterField<E> extends CombinerPad1 {
-    volatile Request<E> tail;
+    volatile Node<E> tail;
 }
 
 class CombinerPad2<E> extends CombinerWaiterField<E> {
@@ -32,7 +32,7 @@ class CombinerPad2<E> extends CombinerWaiterField<E> {
 }
 
 class CombinerFields<E> extends CombinerPad2<E> {
-    Request<E> head;
+    Node<E> head;
     final E item;
     final int maxOps; //max operations per combining session
 
@@ -60,16 +60,15 @@ public class Combiner<E> extends CombinerPad3<E> {
     private static final int MAX_COMBINING_OPERATIONS = 100;
     private static final int NCPU = Runtime.getRuntime().availableProcessors();
     private static final boolean UNIPROCESSOR = NCPU == 1;
-    private static final int SPIN_STEPS = 10;
+    private static final int SPIN_STEPS = 9;
     private static final int MAX_STEPS = SPIN_STEPS + 4;
     private static final int PARK_NS = 1_000; //should this be more? maybe 1M, 1K ns performs alright, no need tbh
-
     public Combiner(E item) {
         super(item, MAX_COMBINING_OPERATIONS);
-        head = tail = new BaseRequest<>(null);
+        head = tail = new Node<>(null);
     }
 
-    //these lock/unlock api's are easy to misuse? should I avoid them. Honestly doesn't matter
+    //these lock/unlock api's are easy to misuse? should I avoid exposing them?
     public void lock() {
         lock.lock();
     }
@@ -78,20 +77,20 @@ public class Combiner<E> extends CombinerPad3<E> {
         lock.unlock();
     }
 
-    public  <R> R accept(Function<E, R> function) {
+    public <R> R accept(Function<E, R> operation) {
         var lock = this.lock;
 
         //if is uniprocessor, don't bother combining
         if (UNIPROCESSOR) {
             lock.lock();
             try {
-               return function.apply(item);
+               return operation.apply(item);
             }finally {
                 lock.unlock();
             }
         }
 
-        Function<E, Object> fn = (Function<E, Object>) function;
+        Function<E, Object> fn = (Function<E, Object>) operation;
         if (lock.tryLock()) {
             try {
                 return doCombineFunction(fn);
@@ -100,46 +99,54 @@ public class Combiner<E> extends CombinerPad3<E> {
             }
         }
 
-        Request<E> req = new BaseRequest<>(fn);
-        Request<E> prev = xchgTail(req);
-        prev.srNext(req);
+        Node<E> node = new Node<>(fn);
+        Node<E> prev = xchgTail(node);
+        prev.srNext(node);
 
         int misses = 0;
         int steps = 1;
+        boolean wasInterrupted = false;
 
-        outer: for (;;) {
+        try {
+            outer: for (;;) {
 
-            if (steps < SPIN_STEPS) {
-                //spin from steps 1 to 10
-                int maxSpins = 1 << steps;
-                for (int spins = 0; spins++ < maxSpins;) {
-                    Thread.onSpinWait();
-                    if (req.laDone()) break outer;
+                if (steps <= SPIN_STEPS) {
+                    //spin from steps 1 to 9
+                    int maxSpins = 1 << steps;
+                    for (int spins = 0; spins++ < maxSpins;) {
+                        Thread.onSpinWait();
+                        if (node.laDone()) break outer;
+                    }
+                } else if (steps < MAX_STEPS) { //yield from steps 10 to 13 (4 yields)
+                    Thread.yield();
+                    if (node.laDone()) break outer;
+                } else {
+                    LockSupport.parkNanos(PARK_NS);
+
+                    if (!wasInterrupted && Thread.interrupted()) wasInterrupted = true; // clear flag
+
+                    if (node.laDone()) break outer;
                 }
 
-            } else if (steps < MAX_STEPS) { //yield from steps 10 to 13 (4 yields)
-                Thread.yield();
-                if (req.laDone()) break;
-            } else {
-                LockSupport.parkNanos(PARK_NS); //not a guaranteed 0.1ms park though, can be spuriously woken up or the park can be 1ms on some platforms
-                //maybe should add a loop that handles how much time left to park, though probably not an issue
-                if (req.laDone()) break;
-            }
+                if (lock.tryLock()) {
+                    try {
+                        return doCombineNode(node);
+                    }finally {
+                        lock.unlock();
+                    }
+                }
 
-            if (lock.tryLock()) {
-                try {
-                    return doCombineRequest(req);
-                }finally {
-                    lock.unlock();
+                if (misses++ == 2) {
+                    steps = Math.min(steps + 1, MAX_STEPS);
+                    misses = 0;
                 }
             }
-
-            if (misses++ == 2) {
-                steps = Math.min(steps + 1, MAX_STEPS);
-                misses = 0;
-            }
+        }finally {
+            if (wasInterrupted) Thread.currentThread().interrupt();
         }
-        return (R) req.result();
+
+        if (node.error() != null) throw new RuntimeException(node.error());
+        else return (R) node.result();
     }
 
 
@@ -150,13 +157,15 @@ public class Combiner<E> extends CombinerPad3<E> {
         return result;
     }
 
-    <R> R doCombineRequest(Request<E> request) {
-        if (request.lpDone()) return (R) request.result();
+    <R> R doCombineNode(Node<E> node) {
+        if (node.lpDone()) return (R) node.result();
         final E item = this.item;
-        R result = (R) request.fn().apply(item);
-        request.spDone();
-        combinePass();
-        return result;
+        try {
+            return  (R) node.fn.apply(item);
+        }finally {
+            node.spDone();
+            combinePass();
+        }
     }
 
     public int uncombined() {
@@ -196,12 +205,13 @@ public class Combiner<E> extends CombinerPad3<E> {
     }
 
     void combinePass() {
-        Request<E> prev = this.head;
-        Request<E> curr;
+        Node<E> prev = this.head;
+        Node<E> curr;
         final E item = this.item;
 
         for (int ops = 0; ops < maxOps && (curr = prev.lvNext()) != null; ++ops) {
             curr.doFn(item);
+            prev.spNextNull();
             prev = curr;
         }
 
@@ -211,8 +221,8 @@ public class Combiner<E> extends CombinerPad3<E> {
     }
 
 
-    Request<E> xchgTail(Request<E> with) {
-        return (Request<E>) TAIL.getAndSet(this, with);
+    Node<E> xchgTail(Node<E> with) {
+        return (Node<E>) TAIL.getAndSet(this, with);
     }
 
 
@@ -221,7 +231,7 @@ public class Combiner<E> extends CombinerPad3<E> {
     static {
         var lookup = MethodHandles.lookup();
         try {
-            TAIL = lookup.findVarHandle(Combiner.class, "tail", Request.class);
+            TAIL = lookup.findVarHandle(Combiner.class, "tail", Node.class);
         }catch (NoSuchFieldException | IllegalAccessException e) {
             throw new ExceptionInInitializerError(e);
         }
