@@ -34,6 +34,7 @@ class CombinerFields<E> extends CombinerPad2<E> {
     Node<E> head;
     final E item;
     final int maxOps; //max operations per combining session
+    Thread owner;
 
     //metrics for benchmarks, could expose em?
     int _uncombined;
@@ -56,29 +57,21 @@ class CombinerPad3<E> extends CombinerFields<E> {
 
 abstract class CombinerCore<E> extends CombinerPad3<E> {
 
-    private static final int MAX_COMBINING_OPERATIONS = 100;
+
+    private static final int DEFAULT_MAX_COMBINING_OPERATIONS = 100;
     static final int NCPU = Runtime.getRuntime().availableProcessors();
     static final boolean IS_UNIPROCESSOR = NCPU == 1;
     private static final int SPIN_STEPS = 9;
-    private static final int MAX_STEPS = SPIN_STEPS + 4;
+    private static final int YIELD_STEPS = 4;
+    private static final int MAX_WAIT_STEPS = SPIN_STEPS + YIELD_STEPS;
     private static final int PARK_NS = 1_000; //should this be more? maybe 1M, 1K ns performs alright, no need tbh
-    public CombinerCore(E item) {
-        super(item, MAX_COMBINING_OPERATIONS);
+
+    CombinerCore(E item) {
+        super(item, DEFAULT_MAX_COMBINING_OPERATIONS);
         head = tail = new Node<>(null);
     }
 
-    //these lock/unlock api's are easy to misuse? should I avoid exposing them?
-    public void lock() {
-        lock.lock();
-    }
-
-    public void unlock() {
-        lock.unlock();
-    }
-
-    public <R> R doAccept(Object op) {
-        var lock = this.lock;
-
+    <R> R tryCombining(Object op, Lock lock) {
         if (lock.tryLock()) {
             try {
                 return doCombine(op);
@@ -105,7 +98,7 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
                         if (node.laDone()) break outer;
                     }
 
-                } else if (steps < MAX_STEPS) { //yield from steps 10 to 13 (4 yields)
+                } else if (steps < MAX_WAIT_STEPS) { //yield from steps 10 to 13 (4 yields)
                     Thread.yield();
                     if (node.laDone()) break outer;
                 } else {
@@ -125,7 +118,7 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
                 }
 
                 if (misses++ == 2) {
-                    steps = Math.min(steps + 1, MAX_STEPS);
+                    steps = Math.min(steps + 1, MAX_WAIT_STEPS);
                     misses = 0;
                 }
 
@@ -134,8 +127,8 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
             if (wasInterrupted) Thread.currentThread().interrupt(); //reset interrupt flag
         }
 
-        if (node.error() != null) throw new RuntimeException(node.error());
-        else return (R) node.result();
+        if (node.err != null) throw new CombiningException(node.err);
+        else return (R) node.result;
     }
 
 
@@ -145,9 +138,18 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
 
     abstract void combinePass();
 
+    void lock() {
+        lock.lock();
+    }
+
+    void unlock() {
+        lock.unlock();
+    }
 
 
-    public int uncombined() {
+
+    //Benchmark metrics
+    int uncombined() {
         lock.lock();
         try {
             return _uncombined;
@@ -174,7 +176,7 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
         }
     }
 
-    public int passes() {
+    int passes() {
         lock.lock();
         try {
             return _passes;

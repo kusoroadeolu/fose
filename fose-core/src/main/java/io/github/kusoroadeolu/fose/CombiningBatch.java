@@ -2,6 +2,7 @@ package io.github.kusoroadeolu.fose;
 
 import java.util.Objects;
 
+//Experimental
 class BatchListPad0 {
     long a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16;
 
@@ -29,9 +30,9 @@ class BatchListPad1<Q, R> extends BatchListFields<Q, R> {
     }
 }
 
-class BatchList<Q, R> extends BatchListPad1<Q, R> {
+class CombiningBatch<Q, R> extends BatchListPad1<Q, R> implements Batch<Q, R>{
 
-    public BatchList(int capacity) {
+    public CombiningBatch(int capacity) {
         super(capacity);
     }
 

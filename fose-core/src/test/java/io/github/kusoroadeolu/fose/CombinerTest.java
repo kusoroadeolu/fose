@@ -4,6 +4,9 @@ import org.jetbrains.lincheck.Lincheck;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.StampedLock;
+
 class CombinerTest {
     static class Adder {
         int i;
@@ -20,7 +23,7 @@ class CombinerTest {
     @Test
     public void sanityCombinerTest() {
         Lincheck.runConcurrentTest(() -> {
-            SimpleCombiner<Adder> c = new SimpleCombiner<>(new Adder());
+            Combiner<Adder> c = new Combiner<>(new Adder());
             Runnable inc = () -> c.accept(Adder::add);
             Thread t = new Thread(inc);
             Thread t1 = new Thread(inc);

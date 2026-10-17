@@ -1,24 +1,38 @@
 package io.github.kusoroadeolu.fose;
 
+import java.util.concurrent.locks.Lock;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
-public class SimpleCombiner<E> extends CombinerCore<E> {
+public class Combiner<E> extends CombinerCore<E> {
 
-    public SimpleCombiner(E item) {
+    public Combiner(E item) {
         super(item);
     }
 
-    public <R> R accept(Function<? super E, ? extends R> operation) {
+    public <R> R apply(Function<? super E, ? extends R> operation) {
+        Lock lock = this.lock;
+
         if (IS_UNIPROCESSOR) {
             lock.lock();
             try {
                 return operation.apply(item);
+            } catch (Throwable t) {
+                throw new CombiningException(t);
             }finally {
                 lock.unlock();
             }
         }
 
-        return super.doAccept(operation);
+        return super.tryCombining(operation, lock);
+    }
+
+
+    public void accept(Consumer<? super E> operation) {
+        apply(e -> {
+            operation.accept(e);
+            return null;
+        });
     }
 
     <R> R doCombine(Object op) {
@@ -31,16 +45,18 @@ public class SimpleCombiner<E> extends CombinerCore<E> {
 
     <R> R doCombineNode(Node<E> node) {
         if (node.done) {
-            if (node.error() != null) throw new RuntimeException(node.error());
-            else return (R) node.result();
+            if (node.err != null) throw new CombiningException(node.err);
+            else return (R) node.result;
         }
 
         final E item = this.item;
+        Function<? super E, ? extends R> fn = (Function<E, R>) node.op;
         try {
-            Function<? super E, ? extends R> fn = (Function<E, R>) node.op;
+            node.done = true;
             return fn.apply(item);
-        }finally {
-            node.spDone();
+        }catch (Throwable t) {
+            throw new CombiningException(t);
+        } finally {
             combinePass();
         }
     }
@@ -51,8 +67,8 @@ public class SimpleCombiner<E> extends CombinerCore<E> {
                 var fn = (Function<E, R>) node.op;
                 node.result = fn.apply(e);
                 node.op = null;
-            }catch (Error | Exception ex) {
-                node.t = ex;
+            }catch (Throwable t) {
+                node.err = t;
             }
 
             node.srDone();
@@ -66,7 +82,7 @@ public class SimpleCombiner<E> extends CombinerCore<E> {
 
         for (int ops = 0; ops < maxOps && (curr = prev.lvNext()) != null; ++ops) {
             doFn(curr, item);
-            prev.spNextNull();
+            prev.next = null;
             prev = curr;
         }
 

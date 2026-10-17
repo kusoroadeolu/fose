@@ -5,7 +5,7 @@ import java.lang.invoke.VarHandle;
 
 class Node<E> {
     Object op; // to allow for handling errs? we should probably wrap the result in
-    Throwable t;
+    Throwable err;
     Node<E> next;
     Object result;
     boolean done;
@@ -16,18 +16,6 @@ class Node<E> {
 
     public void srDone() {
         DONE.setRelease(this, true);
-    }
-
-    public Throwable error() {
-        return t;
-    }
-
-    public Object result() {
-        return result;
-    }
-
-    public void spDone() {
-        done = true;
     }
 
     public void srNext(Node<E> request) {
@@ -41,10 +29,6 @@ class Node<E> {
 
     public Node<E> lvNext() {
         return (Node<E>) NEXT.getVolatile(this);
-    }
-
-    public void spNextNull() {
-        next = null;
     }
 
     static final VarHandle DONE;

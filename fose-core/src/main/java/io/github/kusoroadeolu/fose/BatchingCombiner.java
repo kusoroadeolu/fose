@@ -2,6 +2,7 @@ package io.github.kusoroadeolu.fose;
 
 import java.util.ArrayList;
 
+//Experimental
 abstract class BatchingCombinerPad0<E> extends CombinerCore<E> {
     long a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16;
 
@@ -11,13 +12,13 @@ abstract class BatchingCombinerPad0<E> extends CombinerCore<E> {
 }
 
 abstract class BatchingCombinerFields<E, Q> extends BatchingCombinerPad0<E> {
-    final BatchList<Q, Object> list;
+    final CombiningBatch<Q, Object> combiningBatch;
     final BatchHandler<E, Q, Object> handler;
     final ArrayList<Node<E>> waiters;
 
     BatchingCombinerFields(E item, BatchHandler<E, Q, Object> handler) {
         super(item);
-        this.list = new BatchList<>(NCPU);
+        this.combiningBatch = new CombiningBatch<>(NCPU);
         this.handler = handler;
         waiters = new ArrayList<>();
     }
@@ -38,13 +39,12 @@ public class BatchingCombiner<E, Q> extends BatchingCombinerPad1<E, Q> {
     }
 
     public <R> R accept(Q operation) {
-        return super.doAccept(operation);
+        return super.tryCombining(operation, lock);
     }
 
     @Override
     <R> R doCombine(Object o) {
-        var list = this.list;
-        list.setRequest(0, (Q) o);
+        this.combiningBatch.setRequest(0, (Q) o);
         combinePass();
         return notifyWaiters();
     }
@@ -52,13 +52,12 @@ public class BatchingCombiner<E, Q> extends BatchingCombinerPad1<E, Q> {
     @Override
     <R> R doCombineNode(Node<E> node) {
         if (node.done) {
-            if (node.error() != null) throw new RuntimeException(node.error());
-            else return (R) node.result();
+            if (node.err != null) throw new CombiningException(node.err);
+            else return (R) node.result;
         }
 
-        var list = this.list;
-        list.setRequest(0, (Q) node.op);
-        node.spDone(); //mark as done
+        combiningBatch.setRequest(0, (Q) node.op);
+        node.done = true; //mark as done
         combinePass();
         return notifyWaiters();
     }
@@ -68,52 +67,51 @@ public class BatchingCombiner<E, Q> extends BatchingCombinerPad1<E, Q> {
         int index = 1;
         Node<E> prev = this.head;
         Node<E> curr;
-        BatchList<Q, Object> list = this.list;
+        CombiningBatch<Q, Object> combiningBatch = this.combiningBatch;
         final E item = this.item;
 
         for (int ops = 0; ops < maxOps && (curr = prev.lvNext()) != null; ++ops) {
 
             if (!curr.done) {
-                list.setRequest(index++, (Q) curr.op);
+                combiningBatch.setRequest(index++, (Q) curr.op);
                 waiters.add(curr);
             }
 
-            prev.spNextNull();
+            prev.next = null;
             prev = curr;
         }
 
         ++this._passes;
         if (head == prev) ++this._uncombined;
 
-        Batch<Q, Object> b = new Batch<>(list);
         head = prev;
-        handler.process(b, item);
+        handler.process(combiningBatch, item); //TODO add exception handling for when process might throw
     }
 
     <R> R notifyWaiters() {
-        BatchList<Q, Object> list = this.list;
+        CombiningBatch<Q, Object> combiningBatch = this.combiningBatch;
         int size = waiters.size();
         for (int index = 0; index < size; ++index) {
             int listIndex = index + 1;
             Node<E> waiter = waiters.get(index);
 
-            if (list.hasErr(listIndex)) waiter.t = list.err(listIndex);
-            else waiter.result = list.result(listIndex);
+            if (combiningBatch.hasErr(listIndex)) waiter.err = combiningBatch.err(listIndex);
+            else waiter.result = combiningBatch.result(listIndex);
 
             waiter.srDone();
 
-            list.remove(listIndex);
+            combiningBatch.remove(listIndex);
         }
 
         waiters.clear();
 
-        if (list.hasErr(0)) {
-            var t = list.err(0);
-            list.remove(0);
-            throw new RuntimeException(t);
+        if (combiningBatch.hasErr(0)) {
+            var t = combiningBatch.err(0);
+            combiningBatch.remove(0);
+            throw new CombiningException(t);
         } else {
-            var r = list.result(0);
-            list.remove(0);
+            var r = combiningBatch.result(0);
+            combiningBatch.remove(0);
             return (R) r;
         }
     }

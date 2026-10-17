@@ -74,7 +74,7 @@ public class FoseBenchmark {
 
         Data baseData;
         Data combData;
-        CombinerCore<Data> combiner;
+        Combiner<Data> combiner;
         AtomicBoolean claimed;
 
         @Setup(Level.Iteration)
@@ -86,7 +86,7 @@ public class FoseBenchmark {
         public void setup() {
             baseData = new Data(lines);
             combData = new Data(lines);
-            combiner = new SimpleCombiner<>(combData);
+            combiner = new Combiner<>(combData);
         }
 
         @TearDown(Level.Trial)
@@ -156,14 +156,14 @@ public class FoseBenchmark {
 
     @Benchmark
     public Object combinedAdd(Shared s, Shared.SharedCounters sc) {
-        Object r = s.combiner.doAccept(ADD);
+        Object r = s.combiner.apply(ADD);
         Blackhole.consumeCPU(s.work);
         return r;
     }
 
     @Benchmark
     public Object combinedFetchAdd(Shared s, Shared.SharedCounters sc) {
-        Object r = s.combiner.doAccept(FETCH_ADD);
+        Object r = s.combiner.apply(FETCH_ADD);
         Blackhole.consumeCPU(s.work);
         return r;
     }
