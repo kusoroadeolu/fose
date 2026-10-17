@@ -79,13 +79,13 @@ public class Fose1Benchmark {
 
         HeapData baseData;
         HeapData combData;
-        Combiner<HeapData> combiner;
+        CombinerCore<HeapData> combiner;
 
         @Setup(Level.Trial)
         public void setup() {
             baseData = new HeapData(size);
             combData = new HeapData(size);
-            combiner = new Combiner<>(combData);
+            combiner = new SimpleCombiner<>(combData);
         }
 
         AtomicBoolean claimed;
@@ -150,7 +150,7 @@ public class Fose1Benchmark {
 
     @Benchmark
     public Object combinedHold(Shared s, Shared.SharedCounters sc) {
-        Object r = s.combiner.accept(HOLD);
+        Object r = s.combiner.doAccept(HOLD);
         Blackhole.consumeCPU(s.work);
         return r;
     }

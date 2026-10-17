@@ -2,30 +2,20 @@ package io.github.kusoroadeolu.fose;
 
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
-import java.util.function.Function;
 
 class Node<E> {
-    Function<E, Object> fn; // to allow for handling errs? we should probably wrap the result in
+    Object op; // to allow for handling errs? we should probably wrap the result in
     Throwable t;
     Node<E> next;
     Object result;
     boolean done;
 
-    public Node(Function<E, Object> fn) {
-       this.fn = fn;
+    public Node(Object op) {
+       this.op = op;
    }
 
-   public void doFn(E e) {
-        if (!done) {
-            try {
-                result = fn.apply(e);
-                fn = null;
-            }catch (Error | Exception ex) {
-                t = ex;
-            }
-
-            DONE.setRelease(this, true);
-        }
+    public void srDone() {
+        DONE.setRelease(this, true);
     }
 
     public Throwable error() {
@@ -46,10 +36,6 @@ class Node<E> {
 
     public boolean laDone() {
         return (boolean) DONE.getAcquire(this);
-    }
-
-    public boolean lpDone() {
-        return done;
     }
 
 

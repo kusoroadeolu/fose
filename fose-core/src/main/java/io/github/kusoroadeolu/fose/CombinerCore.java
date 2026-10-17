@@ -5,7 +5,6 @@ import java.lang.invoke.VarHandle;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.StampedLock;
-import java.util.function.Function;
 
 class CombinerPad0 {
     long a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15;
@@ -55,15 +54,15 @@ class CombinerPad3<E> extends CombinerFields<E> {
     }
 }
 
-public class Combiner<E> extends CombinerPad3<E> {
+abstract class CombinerCore<E> extends CombinerPad3<E> {
 
     private static final int MAX_COMBINING_OPERATIONS = 100;
-    private static final int NCPU = Runtime.getRuntime().availableProcessors();
-    private static final boolean UNIPROCESSOR = NCPU == 1;
+    static final int NCPU = Runtime.getRuntime().availableProcessors();
+    static final boolean IS_UNIPROCESSOR = NCPU == 1;
     private static final int SPIN_STEPS = 9;
     private static final int MAX_STEPS = SPIN_STEPS + 4;
     private static final int PARK_NS = 1_000; //should this be more? maybe 1M, 1K ns performs alright, no need tbh
-    public Combiner(E item) {
+    public CombinerCore(E item) {
         super(item, MAX_COMBINING_OPERATIONS);
         head = tail = new Node<>(null);
     }
@@ -77,29 +76,18 @@ public class Combiner<E> extends CombinerPad3<E> {
         lock.unlock();
     }
 
-    public <R> R accept(Function<E, R> operation) {
+    public <R> R doAccept(Object op) {
         var lock = this.lock;
 
-        //if is uniprocessor, don't bother combining
-        if (UNIPROCESSOR) {
-            lock.lock();
-            try {
-               return operation.apply(item);
-            }finally {
-                lock.unlock();
-            }
-        }
-
-        Function<E, Object> fn = (Function<E, Object>) operation;
         if (lock.tryLock()) {
             try {
-                return doCombineFunction(fn);
+                return doCombine(op);
             }finally {
                 lock.unlock();
             }
         }
 
-        Node<E> node = new Node<>(fn);
+        Node<E> node = new Node<>(op);
         Node<E> prev = xchgTail(node);
         prev.srNext(node);
 
@@ -109,7 +97,6 @@ public class Combiner<E> extends CombinerPad3<E> {
 
         try {
             outer: for (;;) {
-
                 if (steps <= SPIN_STEPS) {
                     //spin from steps 1 to 9
                     int maxSpins = 1 << steps;
@@ -117,13 +104,14 @@ public class Combiner<E> extends CombinerPad3<E> {
                         Thread.onSpinWait();
                         if (node.laDone()) break outer;
                     }
+
                 } else if (steps < MAX_STEPS) { //yield from steps 10 to 13 (4 yields)
                     Thread.yield();
                     if (node.laDone()) break outer;
                 } else {
                     LockSupport.parkNanos(PARK_NS);
 
-                    if (!wasInterrupted && Thread.interrupted()) wasInterrupted = true; // clear flag
+                    if (!wasInterrupted && Thread.interrupted()) wasInterrupted = true; // clear interrupt flag
 
                     if (node.laDone()) break outer;
                 }
@@ -140,9 +128,10 @@ public class Combiner<E> extends CombinerPad3<E> {
                     steps = Math.min(steps + 1, MAX_STEPS);
                     misses = 0;
                 }
+
             }
         }finally {
-            if (wasInterrupted) Thread.currentThread().interrupt();
+            if (wasInterrupted) Thread.currentThread().interrupt(); //reset interrupt flag
         }
 
         if (node.error() != null) throw new RuntimeException(node.error());
@@ -150,26 +139,13 @@ public class Combiner<E> extends CombinerPad3<E> {
     }
 
 
-    <R> R doCombineFunction(Function<E, Object> fn) {
-        final E item = this.item;
-        R result = (R) fn.apply(item);
-        combinePass();
-        return result;
-    }
+    abstract  <R> R doCombine(Object o);
 
-    <R> R doCombineNode(Node<E> node) {
-        if (node.lpDone()) {
-            if (node.error() != null) throw new RuntimeException(node.error());
-            else return (R) node.result();
-        }
-        final E item = this.item;
-        try {
-            return  (R) node.fn.apply(item);
-        }finally {
-            node.spDone();
-            combinePass();
-        }
-    }
+    abstract  <R> R doCombineNode(Node<E> node);
+
+    abstract void combinePass();
+
+
 
     public int uncombined() {
         lock.lock();
@@ -207,23 +183,6 @@ public class Combiner<E> extends CombinerPad3<E> {
         }
     }
 
-    void combinePass() {
-        Node<E> prev = this.head;
-        Node<E> curr;
-        final E item = this.item;
-
-        for (int ops = 0; ops < maxOps && (curr = prev.lvNext()) != null; ++ops) {
-            curr.doFn(item);
-            prev.spNextNull();
-            prev = curr;
-        }
-
-        ++this._passes;
-        if (head == prev) ++this._uncombined;
-        head = prev;
-    }
-
-
     Node<E> xchgTail(Node<E> with) {
         return (Node<E>) TAIL.getAndSet(this, with);
     }
@@ -234,7 +193,7 @@ public class Combiner<E> extends CombinerPad3<E> {
     static {
         var lookup = MethodHandles.lookup();
         try {
-            TAIL = lookup.findVarHandle(Combiner.class, "tail", Node.class);
+            TAIL = lookup.findVarHandle(CombinerCore.class, "tail", Node.class);
         }catch (NoSuchFieldException | IllegalAccessException e) {
             throw new ExceptionInInitializerError(e);
         }

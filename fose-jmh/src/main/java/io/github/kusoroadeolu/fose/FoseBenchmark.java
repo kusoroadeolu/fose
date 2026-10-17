@@ -5,7 +5,6 @@ import org.openjdk.jmh.infra.Blackhole;
 import org.openjdk.jmh.results.format.ResultFormatType;
 import org.openjdk.jmh.runner.Runner;
 import org.openjdk.jmh.runner.options.OptionsBuilder;
-import org.openjdk.jmh.runner.options.TimeValue;
 
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -75,7 +74,7 @@ public class FoseBenchmark {
 
         Data baseData;
         Data combData;
-        Combiner<Data> combiner;
+        CombinerCore<Data> combiner;
         AtomicBoolean claimed;
 
         @Setup(Level.Iteration)
@@ -87,7 +86,7 @@ public class FoseBenchmark {
         public void setup() {
             baseData = new Data(lines);
             combData = new Data(lines);
-            combiner = new Combiner<>(combData);
+            combiner = new SimpleCombiner<>(combData);
         }
 
         @TearDown(Level.Trial)
@@ -157,14 +156,14 @@ public class FoseBenchmark {
 
     @Benchmark
     public Object combinedAdd(Shared s, Shared.SharedCounters sc) {
-        Object r = s.combiner.accept(ADD);
+        Object r = s.combiner.doAccept(ADD);
         Blackhole.consumeCPU(s.work);
         return r;
     }
 
     @Benchmark
     public Object combinedFetchAdd(Shared s, Shared.SharedCounters sc) {
-        Object r = s.combiner.accept(FETCH_ADD);
+        Object r = s.combiner.doAccept(FETCH_ADD);
         Blackhole.consumeCPU(s.work);
         return r;
     }
