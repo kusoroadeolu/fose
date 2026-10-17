@@ -37,7 +37,7 @@ class CombinerTest {
                 t1.join();
                 t2.join();
             }catch (InterruptedException _) {}
-            Assertions.assertEquals(3, c.accept(Adder::sum));
+            Assertions.assertEquals(3, c.apply(Adder::sum));
         });
 
     }

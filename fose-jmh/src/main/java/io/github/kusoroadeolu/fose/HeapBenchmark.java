@@ -15,7 +15,7 @@ import java.util.function.Function;
 @Warmup(iterations = 5, time = 1)
 @BenchmarkMode(Mode.AverageTime)
 @OutputTimeUnit(TimeUnit.NANOSECONDS)
-public class Fose1Benchmark {
+public class HeapBenchmark {
 
     static final class HeapData {
         static final int DELTA_MASK = (1 << 20) - 1;
@@ -74,7 +74,7 @@ public class Fose1Benchmark {
         @Param({"65536"})   // 512 KB of longs, bigger than my L1 cache
         public int size;
 
-        @Param({"500"})
+        @Param({"0", "500"})
         public int work;
 
         HeapData baseData;
@@ -113,11 +113,11 @@ public class Fose1Benchmark {
                 this.reporter = shared.claimed.compareAndSet(false, true);
             }
 
-            public long uncombined() {
+            public long combined() {
                 if (reporter) {
-                    int uncombined = shared.combiner.uncombined();
-                    shared.combiner.resetUncombined();
-                    return uncombined;
+                    int combined = shared.combiner.combined();
+                    shared.combiner.resetCombined();
+                    return combined;
                 }
 
                 return 0;
@@ -163,7 +163,7 @@ public class Fose1Benchmark {
             String resultFile = "jmh-threads-" + t + ".json";
             new Runner(
                     new OptionsBuilder()
-                            .include(Fose1Benchmark.class.getSimpleName())
+                            .include(HeapBenchmark.class.getSimpleName())
                             .threads(t)
                             .resultFormat(ResultFormatType.JSON)
                             .result(resultFile)
@@ -176,29 +176,28 @@ public class Fose1Benchmark {
 
 /*
 =====================================================================
-FOSE BENCHMARK: combinedHold vs baselineHold   (Size=65536, Work=0)
+HEAP BENCHMARK: combinedHold vs baselineHold   (Size=65536, Work=0)
 =====================================================================
-Threads | Baseline (ns/op)    | Combined (ns/op)    | Diff     | Passes      | Uncombined
+Threads | Baseline (ns/op)    | Combined (ns/op)    | Diff     | Passes      | Combined
 --------|---------------------|---------------------|----------|-------------|------------
-1       | 105.146 ± 5.729     | 105.349 ± 5.195     |  +0.2%   | 143,301,144 | 143,301,144
-2       | 367.571 ± 58.012    | 240.884 ± 15.882    | -34.5%   |  68,139,562 |  10,614,326
-3       | 482.603 ± 23.254    | 379.986 ± 12.488    | -21.3%   |  30,667,521 |     476,498
-4       | 663.972 ± 78.125    | 451.092 ± 8.508     | -32.1%   |   3,437,575 |     199,349
-6       | 941.600 ± 24.341    | 660.373 ± 15.565    | -29.9%   |   1,575,285 |     184,625
-8       | 1223.727 ± 47.253   | 987.449 ± 15.489    | -19.3%   |   1,473,396 |     208,439
-16      | 2431.645 ± 100.558  | 2050.732 ± 54.137   | -15.7%   |   1,769,656 |     464,178 oversubscribed
+1       | 105.146 ± 5.729     | 97.261 ± 2.194      |  -7.5%   | 308,997,993 | 0
+2       | 367.571 ± 58.012    | 230.245 ± 6.314     | -37.4%   | 146,301,855 | 115,314,752
+3       | 482.603 ± 23.254    | 389.318 ± 8.486     | -19.3%   |  47,249,388 | 46,488,379
+4       | 663.972 ± 78.125    | 476.699 ± 7.309     | -28.2%   |   4,568,121 |  4,216,985
+6       | 941.600 ± 24.341    | 735.762 ± 23.409    | -21.9%   |   2,870,981 |  2,516,279
+8       | 1223.727 ± 47.253   | 1071.025 ± 13.676   | -12.5%   |   2,612,135 |  2,335,625
+16      | 2431.645 ± 100.558  | 2190.943 ± 33.680   |  -9.9%   |   2,977,724 |  2,484,704 oversubscribed
 
 =====================================================================
-FOSE BENCHMARK: combinedHold vs baselineHold   (Size=65536, Work=500)
+HEAP BENCHMARK: combinedHold vs baselineHold   (Size=65536, Work=500)
 =====================================================================
-Threads | Baseline (ns/op)    | Combined (ns/op)    | Diff     | Passes      | Uncombined
+Threads | Baseline (ns/op)    | Combined (ns/op)    | Diff     | Passes      | Combined
 --------|---------------------|---------------------|----------|-------------|------------
-1       | 972.420 ± 63.498    | 924.043 ± 4.528     |  -5.0%   |  16,246,096 |  16,246,096
-2       | 1148.491 ± 74.376   | 1018.158 ± 25.693   | -11.3%   |  29,170,530 |  28,162,651
-3       | 1952.399 ± 444.693  | 1296.260 ± 26.686   | -33.6%   |  15,024,031 |   2,985,984
-4       | 3581.258 ± 505.956  | 1406.492 ± 13.427   | -60.7%   |  14,388,139 |   2,253,470
-6       | 4379.929 ± 110.438  | 1559.096 ± 25.577   | -64.4%   |  15,627,221 |   2,276,804
-8       | 5978.076 ± 231.845  | 1726.234 ± 44.088   | -71.1%   |   9,046,718 |     312,255
-16      | 11724.731 ± 715.380 | 3543.600 ± 114.402  | -69.8%   |  10,296,063 |     781,063  oversubscribed
-
+1       | 972.420 ± 63.498    | 894.957 ± 24.009    |  -8.0%   |  33,589,595 | 0
+2       | 1148.491 ± 74.376   | 1031.413 ± 12.767   | -10.2%   |  56,652,347 |  1,577,943
+3       | 1952.399 ± 444.693  | 1301.101 ± 23.390   | -33.4%   |  29,479,818 | 22,105,226
+4       | 3581.258 ± 505.956  | 1414.081 ± 11.989   | -60.5%   |  28,488,913 | 23,325,490
+6       | 4379.929 ± 110.438  | 1586.741 ± 12.507   | -63.8%   |  28,763,680 | 23,585,631
+8       | 5978.076 ± 231.845  | 1779.432 ± 43.572   | -70.2%   |  12,990,477 | 12,519,564
+16      | 11724.731 ± 715.380 | 3578.409 ± 67.923   | -69.5%   |  13,228,989 | 12,797,028 oversubscribed
 */

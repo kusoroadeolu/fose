@@ -37,7 +37,7 @@ class CombinerFields<E> extends CombinerPad2<E> {
     Thread owner;
 
     //metrics for benchmarks, could expose em?
-    int _uncombined;
+    int _combined;
     int _passes;
 
     public CombinerFields(E item, int maxOps) {
@@ -55,19 +55,75 @@ class CombinerPad3<E> extends CombinerFields<E> {
     }
 }
 
+
+/*
+* The idea of flat combining was introduced in the 2010 SPAA paper, Flat
+* Combining and the Synchronization-Parallelism Tradeoff (Hendler, Incze, Shavit, Tzafrir)
+*
+*
+* Flat combining can be used as an alternative to fine-grained locking for making a
+* sequential structure thread-safe while minimizing the synchronization overhead and cache coherence
+* faced when waiting to acquire a lock.
+*
+* The basic idea of flat combining is when a thread finds a lock contended, it can
+* request for its operation to be applied by the lock holder. This is done by the thread enqueueing
+* a node object, containing its operation (expressed through a function/consumer lambda)
+* and periodically checking whether its operation has been applied or the lock is held.
+*
+* The publication queue is an implementation of the Dmitry Vyukov MPSC unbounded queue
+* Enqueues onto the queue involve an atomic xchg operation of the queue's tail to a thread's node
+* and then linking the previous tail's next ptr to the thread's node. This allows enqueues to be wait free and avoid CAS retry storms which can greatly reduce performance under high contention
+* There is a brief moment in time between swapping the queue's tail and linking the previous tail's next node in which the queue's state observed by a traversing lock holder could be inconsistent.
+* Hence, a combining operation, is exited once a lock holder encounters this inconsistency.
+*
+* A combiner applies its own op, then drains up to maxOps nodes, bounding the time it spends serving others.
+*
+* Waiters use an escalating backoff strategy (from spin waiting to periodically sleeping) by tracking
+* the number of times they've missed acquiring the lock to make a local guess on how contended the structure or how deep their node is in the publication queue
+* and therefore increase the time spent waiting on their request rather than continuously retrying the lock.
+*
+* Interrupts are deferred while waiting (parkNanos would otherwise return
+* immediately and the node can't be abandoned once published) and restored on exit.
+* Exceptions thrown by a combined op are rethrown in the owning thread as CombiningException.
+*
+*/
 abstract class CombinerCore<E> extends CombinerPad3<E> {
 
-
+    /**
+     * Default maximum number of operations a combiner can serve in one pass
+     * */
     private static final int DEFAULT_MAX_COMBINING_OPERATIONS = 100;
+
+    /**
+     * Number of available processor
+     * */
     static final int NCPU = Runtime.getRuntime().availableProcessors();
     static final boolean IS_UNIPROCESSOR = NCPU == 1;
+
+    /**
+     * Number of steps a spinning thread takes before yielding
+     * */
     private static final int SPIN_STEPS = 9;
+
+    /**
+     * Number of steps a yielding thread takes before sleeping
+     * */
     private static final int YIELD_STEPS = 4;
+
+    /**
+     * Maximum number of steps a waiting thread takes before sleeping
+     * */
     private static final int MAX_WAIT_STEPS = SPIN_STEPS + YIELD_STEPS;
-    private static final int PARK_NS = 1_000; //should this be more? maybe 1M, 1K ns performs alright, no need tbh
+
+    private static final int SLEEP_DURATION_NANOS = 1_000;
 
     CombinerCore(E item) {
         super(item, DEFAULT_MAX_COMBINING_OPERATIONS);
+        head = tail = new Node<>(null);
+    }
+
+    CombinerCore(E item, int maxCombiningOperations) {
+        super(item, maxCombiningOperations > 0 ? maxCombiningOperations : DEFAULT_MAX_COMBINING_OPERATIONS);
         head = tail = new Node<>(null);
     }
 
@@ -91,22 +147,22 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
         try {
             outer: for (;;) {
                 if (steps <= SPIN_STEPS) {
-                    //spin from steps 1 to 9
+
                     int maxSpins = 1 << steps;
                     for (int spins = 0; spins++ < maxSpins;) {
                         Thread.onSpinWait();
                         if (node.laDone()) break outer;
                     }
 
-                } else if (steps < MAX_WAIT_STEPS) { //yield from steps 10 to 13 (4 yields)
+                } else if (steps < MAX_WAIT_STEPS) {
                     Thread.yield();
-                    if (node.laDone()) break outer;
+                    if (node.laDone()) break;
                 } else {
-                    LockSupport.parkNanos(PARK_NS);
+                    LockSupport.parkNanos(SLEEP_DURATION_NANOS);
 
                     if (!wasInterrupted && Thread.interrupted()) wasInterrupted = true; // clear interrupt flag
 
-                    if (node.laDone()) break outer;
+                    if (node.laDone()) break;
                 }
 
                 if (lock.tryLock()) {
@@ -149,19 +205,19 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
 
 
     //Benchmark metrics
-    int uncombined() {
+    int combined() {
         lock.lock();
         try {
-            return _uncombined;
+            return _combined;
         }finally {
             lock.unlock();
         }
     }
 
-    void resetUncombined() {
+    void resetCombined() {
         lock.lock();
         try {
-            _uncombined = 0;
+            _combined = 0;
         }finally {
             lock.unlock();
         }

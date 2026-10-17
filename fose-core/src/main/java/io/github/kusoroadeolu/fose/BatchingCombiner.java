@@ -2,7 +2,7 @@ package io.github.kusoroadeolu.fose;
 
 import java.util.ArrayList;
 
-//Experimental
+//Experimental, will contain some old code
 abstract class BatchingCombinerPad0<E> extends CombinerCore<E> {
     long a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16;
 
@@ -82,7 +82,7 @@ public class BatchingCombiner<E, Q> extends BatchingCombinerPad1<E, Q> {
         }
 
         ++this._passes;
-        if (head == prev) ++this._uncombined;
+        if (head == prev) ++this._combined;
 
         head = prev;
         handler.process(combiningBatch, item); //TODO add exception handling for when process might throw

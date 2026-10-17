@@ -38,8 +38,16 @@ public class Combiner<E> extends CombinerCore<E> {
     <R> R doCombine(Object op) {
         Function<? super E, ? extends R> fn = (Function<E, R>) op;
         final E item = this.item;
-        R result = fn.apply(item);
-        combinePass();
+        R result;
+
+        try {
+            result = fn.apply(item);
+        }catch (Throwable t) {
+            throw new CombiningException(t);
+        } finally {
+            combinePass();
+        }
+
         return result;
     }
 
@@ -57,22 +65,25 @@ public class Combiner<E> extends CombinerCore<E> {
         }catch (Throwable t) {
             throw new CombiningException(t);
         } finally {
-            combinePass();
+            combinePass(node);
         }
     }
 
-    <R> void doFn(Node<E> node, E e) {
+    <R> boolean doFn(Node<E> node, E e) {
         if (!node.done) {
             try {
                 var fn = (Function<E, R>) node.op;
                 node.result = fn.apply(e);
-                node.op = null;
+                node.op = null; //clear the operation, honestly this
             }catch (Throwable t) {
                 node.err = t;
             }
 
             node.srDone();
+            return true;
         }
+
+        return false;
     }
 
     void combinePass() {
@@ -80,14 +91,56 @@ public class Combiner<E> extends CombinerCore<E> {
         Node<E> curr;
         final E item = this.item;
 
-        for (int ops = 0; ops < maxOps && (curr = prev.lvNext()) != null; ++ops) {
-            doFn(curr, item);
+        int ops = 0;
+        while (ops < maxOps && (curr = prev.lvNext()) != null) {
+            if (doFn(curr, item)) ++ops;
             prev.next = null;
             prev = curr;
         }
 
         ++this._passes;
-        if (head == prev) ++this._uncombined;
+        if (ops > 0) ++this._combined;
         head = prev;
+    }
+
+    void combinePass(Node<E> self) {
+        Node<E> prev = this.head;
+        Node<E> curr;
+        final E item = this.item;
+
+        int ops = 0;
+        boolean sawSelf = false;
+        boolean gap = false;
+
+        for (;;) {
+            if (ops >= maxOps) break;
+
+            if ((curr = prev.lvNext()) == null) {
+                if (!sawSelf) gap = true; //if we didn't see our node, there's a gap in the queue, we'll continue combining from our node
+                break;
+            }
+
+            if (!sawSelf && curr == self) sawSelf = true;
+
+            if (doFn(curr, item)) ++ops;
+
+            prev.next = null;
+            prev = curr;
+        }
+
+        head = prev;
+
+
+        //hop to our node, never modifies head, also never unlinks as we traverse, so garbage nodes are still reachable from the head
+        if (gap) {
+            Node<E> start = self;
+            while (ops < maxOps && (curr = start.lvNext()) != null) {
+                if (doFn(curr, item)) ++ops;
+                start = curr;
+            }
+        }
+
+        ++_passes;
+        if (ops > 0) ++_combined;
     }
 }
