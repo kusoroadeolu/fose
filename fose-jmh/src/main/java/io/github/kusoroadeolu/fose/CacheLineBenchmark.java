@@ -63,6 +63,7 @@ public class CacheLineBenchmark {
     };
 
     static final Function<Data, Object> FETCH_ADD = Data::fetchAdd; // will box the result
+    private static final int MAX_COMBINING_OPS = 100;
 
     @State(Scope.Benchmark)
     public static class Shared {
@@ -80,19 +81,20 @@ public class CacheLineBenchmark {
         @Setup(Level.Iteration)
         public void claimed() {
             claimed = new AtomicBoolean(false);
+            combiner.resetStats();
         }
 
         @Setup(Level.Trial)
         public void setup() {
             baseData = new Data(lines);
             combData = new Data(lines);
-            combiner = new Combiner<>(combData);
+            combiner = new Combiner<>(combData, MAX_COMBINING_OPS, true);
         }
 
         @TearDown(Level.Trial)
         public void tearDown() {
             baseData.verify();
-            combData.verify();  //should we collect these in aux counters as well?
+            combData.verify();
         }
 
         @State(Scope.Thread)
@@ -109,9 +111,7 @@ public class CacheLineBenchmark {
 
             public long combined() {
                 if (reporter) {
-                    int combined = shared.combiner.combined();
-                    shared.combiner.resetCombined();
-                    return combined;
+                    return shared.combiner.stats().combiningPasses();
                 }
 
                 return 0;
@@ -119,9 +119,7 @@ public class CacheLineBenchmark {
 
             public long passes() {
                 if (reporter) {
-                    int passes = shared.combiner.passes();
-                    shared.combiner.resetPasses();
-                    return passes;
+                    return shared.combiner.stats().totalPasses();
                 }
 
                 return 0;

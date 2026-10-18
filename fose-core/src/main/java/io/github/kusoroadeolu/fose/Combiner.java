@@ -10,6 +10,14 @@ public class Combiner<E> extends CombinerCore<E> {
         super(item);
     }
 
+    public Combiner(E item, int maxCombiningOperations) {
+        super(item, maxCombiningOperations);
+    }
+
+    public Combiner(E item, int maxCombiningOperations, boolean exposeMetrics) {
+        super(item, maxCombiningOperations, exposeMetrics);
+    }
+
     public <R> R apply(Function<? super E, ? extends R> operation) {
         Lock lock = this.lock;
 
@@ -71,8 +79,8 @@ public class Combiner<E> extends CombinerCore<E> {
 
     <R> boolean doFn(Node<E> node, E e) {
         if (!node.done) {
+            var fn = (Function<E, R>) node.op;
             try {
-                var fn = (Function<E, R>) node.op;
                 node.result = fn.apply(e);
                 node.op = null; //clear the operation, honestly this
             }catch (Throwable t) {
@@ -98,8 +106,14 @@ public class Combiner<E> extends CombinerCore<E> {
             prev = curr;
         }
 
-        ++this._passes;
-        if (ops > 0) ++this._combined;
+        if (exposeMetrics) {
+            ++this._passes;
+            if (ops > 0) {
+                ++this._combined;
+                _total_ops += ops;
+            }
+        }
+
         head = prev;
     }
 
@@ -140,7 +154,12 @@ public class Combiner<E> extends CombinerCore<E> {
             }
         }
 
-        ++_passes;
-        if (ops > 0) ++_combined;
+        if (exposeMetrics) {
+            ++this._passes;
+            if (ops > 0) {
+                ++this._combined;
+                _total_ops += ops;
+            }
+        }
     }
 }

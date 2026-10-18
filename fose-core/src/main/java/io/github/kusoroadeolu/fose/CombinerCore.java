@@ -34,15 +34,17 @@ class CombinerFields<E> extends CombinerPad2<E> {
     Node<E> head;
     final E item;
     final int maxOps; //max operations per combining session
-    Thread owner;
+    final boolean exposeMetrics;
 
     //metrics for benchmarks, could expose em?
     int _combined;
     int _passes;
+    int _total_ops;
 
-    public CombinerFields(E item, int maxOps) {
+    public CombinerFields(E item, int maxOps, boolean exposeMetrics) {
         this.item = item;
         this.maxOps = maxOps;
+        this.exposeMetrics = exposeMetrics;
     }
 }
 
@@ -50,8 +52,8 @@ class CombinerPad3<E> extends CombinerFields<E> {
     long a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15;
 
 
-    public CombinerPad3(E item, int maxOps) {
-        super(item, maxOps);
+    public CombinerPad3(E item, int maxOps, boolean exposeMetrics) {
+        super(item, maxOps, exposeMetrics);
     }
 }
 
@@ -95,7 +97,7 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
     private static final int DEFAULT_MAX_COMBINING_OPERATIONS = 100;
 
     /**
-     * Number of available processor
+     * Number of available processors
      * */
     static final int NCPU = Runtime.getRuntime().availableProcessors();
     static final boolean IS_UNIPROCESSOR = NCPU == 1;
@@ -115,19 +117,39 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
      * */
     private static final int MAX_WAIT_STEPS = SPIN_STEPS + YIELD_STEPS;
 
+
+    /**
+     * Sleep duration in nanoseconds
+     * */
     private static final int SLEEP_DURATION_NANOS = 1_000;
 
     CombinerCore(E item) {
-        super(item, DEFAULT_MAX_COMBINING_OPERATIONS);
+        super(item, DEFAULT_MAX_COMBINING_OPERATIONS, false);
         head = tail = new Node<>(null);
     }
 
     CombinerCore(E item, int maxCombiningOperations) {
-        super(item, maxCombiningOperations > 0 ? maxCombiningOperations : DEFAULT_MAX_COMBINING_OPERATIONS);
+        super(item, maxCombiningOperations > 0 ? maxCombiningOperations : DEFAULT_MAX_COMBINING_OPERATIONS, false);
         head = tail = new Node<>(null);
     }
 
+    CombinerCore(E item, int maxCombiningOperations, boolean exposeMetrics) {
+        super(item, maxCombiningOperations > 0 ? maxCombiningOperations : DEFAULT_MAX_COMBINING_OPERATIONS, exposeMetrics);
+        head = tail = new Node<>(null);
+    }
+
+    public Stats stats() {
+        lock.lock();
+        try {
+            return new Stats(_total_ops, _passes, _combined, (double) _total_ops / _passes);
+        }finally {
+            lock.unlock();
+        }
+    }
+
+
     <R> R tryCombining(Object op, Lock lock) {
+
         if (lock.tryLock()) {
             try {
                 return doCombine(op);
@@ -202,44 +224,17 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
         lock.unlock();
     }
 
-
-
-    //Benchmark metrics
-    int combined() {
+    void resetStats() {
         lock.lock();
         try {
-            return _combined;
-        }finally {
-            lock.unlock();
-        }
-    }
-
-    void resetCombined() {
-        lock.lock();
-        try {
+            _total_ops = 0;
+            _passes = 0;
             _combined = 0;
         }finally {
             lock.unlock();
         }
     }
 
-    void resetPasses() {
-        lock.lock();
-        try {
-            _passes = 0;
-        }finally {
-            lock.unlock();
-        }
-    }
-
-    int passes() {
-        lock.lock();
-        try {
-            return _passes;
-        }finally {
-            lock.unlock();
-        }
-    }
 
     Node<E> xchgTail(Node<E> with) {
         return (Node<E>) TAIL.getAndSet(this, with);

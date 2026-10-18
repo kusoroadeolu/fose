@@ -67,6 +67,7 @@ public class HeapBenchmark {
     }
 
     static final Function<HeapData, Object> HOLD = HeapData::hold;
+    private static final int MAX_COMBINING_OPS = 100;
 
 
     @State(Scope.Benchmark)
@@ -74,7 +75,7 @@ public class HeapBenchmark {
         @Param({"65536"})   // 512 KB of longs, bigger than my L1 cache
         public int size;
 
-        @Param({"0", "500"})
+        @Param({"0"})
         public int work;
 
         HeapData baseData;
@@ -85,7 +86,7 @@ public class HeapBenchmark {
         public void setup() {
             baseData = new HeapData(size);
             combData = new HeapData(size);
-            combiner = new Combiner<>(combData);
+            combiner = new Combiner<>(combData, MAX_COMBINING_OPS, true);
         }
 
         AtomicBoolean claimed;
@@ -93,6 +94,7 @@ public class HeapBenchmark {
         @Setup(Level.Iteration)
         public void claimed() {
             claimed = new AtomicBoolean(false);
+            combiner.resetStats();
         }
 
         @TearDown(Level.Trial)
@@ -115,9 +117,7 @@ public class HeapBenchmark {
 
             public long combined() {
                 if (reporter) {
-                    int combined = shared.combiner.combined();
-                    shared.combiner.resetCombined();
-                    return combined;
+                    return shared.combiner.stats().combiningPasses();
                 }
 
                 return 0;
@@ -125,9 +125,7 @@ public class HeapBenchmark {
 
             public long passes() {
                 if (reporter) {
-                    int passes = shared.combiner.passes();
-                    shared.combiner.resetPasses();
-                    return passes;
+                    return shared.combiner.stats().totalPasses();
                 }
 
                 return 0;
@@ -135,18 +133,18 @@ public class HeapBenchmark {
         }
     }
 
-    @Benchmark
-    public Object baselineHold(Shared s, Shared.SharedCounters sc) {
-        Object r;
-        s.combiner.lock();
-        try {
-            r = s.baseData.hold();
-        } finally {
-            s.combiner.unlock();
-        }
-        Blackhole.consumeCPU(s.work);
-        return r;
-    }
+//    @Benchmark
+//    public Object baselineHold(Shared s, Shared.SharedCounters sc) {
+//        Object r;
+//        s.combiner.lock();
+//        try {
+//            r = s.baseData.hold();
+//        } finally {
+//            s.combiner.unlock();
+//        }
+//        Blackhole.consumeCPU(s.work);
+//        return r;
+//    }
 
     @Benchmark
     public Object combinedHold(Shared s, Shared.SharedCounters sc) {
@@ -180,20 +178,21 @@ HEAP BENCHMARK: combinedHold vs baselineHold   (Size=65536, Work=0)
 =====================================================================
 Threads | Baseline (ns/op)    | Combined (ns/op)    | Diff     | Passes      | Combined
 --------|---------------------|---------------------|----------|-------------|------------
-1       | 105.146 ± 5.729     | 97.261 ± 2.194      |  -7.5%   | 308,997,993 | 0
+1       | 105.146 ± 5.729     | 97.261 ± 2.194      |  -7.5%   | 308,997,993 | 0       same here
 2       | 367.571 ± 58.012    | 230.245 ± 6.314     | -37.4%   | 146,301,855 | 115,314,752
 3       | 482.603 ± 23.254    | 389.318 ± 8.486     | -19.3%   |  47,249,388 | 46,488,379
 4       | 663.972 ± 78.125    | 476.699 ± 7.309     | -28.2%   |   4,568,121 |  4,216,985
 6       | 941.600 ± 24.341    | 735.762 ± 23.409    | -21.9%   |   2,870,981 |  2,516,279
 8       | 1223.727 ± 47.253   | 1071.025 ± 13.676   | -12.5%   |   2,612,135 |  2,335,625
 16      | 2431.645 ± 100.558  | 2190.943 ± 33.680   |  -9.9%   |   2,977,724 |  2,484,704 oversubscribed
+I'm curious why we seem to have less combining passes when we have less work in between?
 
 =====================================================================
 HEAP BENCHMARK: combinedHold vs baselineHold   (Size=65536, Work=500)
 =====================================================================
 Threads | Baseline (ns/op)    | Combined (ns/op)    | Diff     | Passes      | Combined
 --------|---------------------|---------------------|----------|-------------|------------
-1       | 972.420 ± 63.498    | 894.957 ± 24.009    |  -8.0%   |  33,589,595 | 0
+1       | 972.420 ± 63.498    | 894.957 ± 24.009    |  -8.0%   |  33,589,595 | 0       difference here is basically negligible
 2       | 1148.491 ± 74.376   | 1031.413 ± 12.767   | -10.2%   |  56,652,347 |  1,577,943
 3       | 1952.399 ± 444.693  | 1301.101 ± 23.390   | -33.4%   |  29,479,818 | 22,105,226
 4       | 3581.258 ± 505.956  | 1414.081 ± 11.989   | -60.5%   |  28,488,913 | 23,325,490
