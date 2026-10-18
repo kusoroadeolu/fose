@@ -1,4 +1,4 @@
-package io.github.kusoroadeolu.fose;
+package io.github.kusoroadeolu.fose.jmh;
 
 public class JvmArgs {
     public static final String INITIAL_HEAP_SIZE = "-Xms4g";

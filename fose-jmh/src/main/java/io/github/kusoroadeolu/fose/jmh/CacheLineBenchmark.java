@@ -1,5 +1,6 @@
-package io.github.kusoroadeolu.fose;
+package io.github.kusoroadeolu.fose.jmh;
 
+import io.github.kusoroadeolu.fose.Combiner;
 import org.openjdk.jmh.annotations.*;
 import org.openjdk.jmh.infra.Blackhole;
 import org.openjdk.jmh.results.format.ResultFormatType;
@@ -8,6 +9,8 @@ import org.openjdk.jmh.runner.options.OptionsBuilder;
 
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.StampedLock;
 import java.util.function.Function;
 
 
@@ -76,6 +79,7 @@ public class CacheLineBenchmark {
         Data baseData;
         Data combData;
         Combiner<Data> combiner;
+        Lock lock;
         AtomicBoolean claimed;
 
         @Setup(Level.Iteration)
@@ -88,6 +92,7 @@ public class CacheLineBenchmark {
         public void setup() {
             baseData = new Data(lines);
             combData = new Data(lines);
+            lock = new StampedLock().asWriteLock();
             combiner = new Combiner<>(combData, MAX_COMBINING_OPS, true);
         }
 
@@ -111,7 +116,7 @@ public class CacheLineBenchmark {
 
             public long combined() {
                 if (reporter) {
-                    return shared.combiner.stats().combiningPasses();
+                    return shared.combiner.metrics().combiningPasses();
                 }
 
                 return 0;
@@ -119,7 +124,7 @@ public class CacheLineBenchmark {
 
             public long passes() {
                 if (reporter) {
-                    return shared.combiner.stats().totalPasses();
+                    return shared.combiner.metrics().totalPasses();
                 }
 
                 return 0;
@@ -129,11 +134,11 @@ public class CacheLineBenchmark {
 
     @Benchmark
     public void baselineAdd(Shared s,Shared.SharedCounters sc) {
-        s.combiner.lock();
+        s.lock.lock();
         try {
             s.baseData.add();
         } finally {
-            s.combiner.unlock();
+            s.lock.unlock();
         }
         Blackhole.consumeCPU(s.work);
     }
@@ -141,11 +146,11 @@ public class CacheLineBenchmark {
     @Benchmark
     public Object baselineFetchAdd(Shared s, Shared.SharedCounters sc) {
         Object r;
-        s.combiner.lock();
+        s.lock.lock();
         try {
             r = s.baseData.fetchAdd(); // boxed, to match the combiner's Function<E,Object>
         } finally {
-            s.combiner.unlock();
+            s.lock.unlock();
         }
         Blackhole.consumeCPU(s.work);
         return r;

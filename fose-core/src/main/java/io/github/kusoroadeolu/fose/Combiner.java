@@ -60,7 +60,7 @@ public class Combiner<E> extends CombinerCore<E> {
     }
 
     <R> R doCombineNode(Node<E> node) {
-        if (node.done) {
+        if (node.op == null)  {
             if (node.err != null) throw new CombiningException(node.err);
             else return (R) node.result;
         }
@@ -68,21 +68,20 @@ public class Combiner<E> extends CombinerCore<E> {
         final E item = this.item;
         Function<? super E, ? extends R> fn = (Function<E, R>) node.op;
         try {
-            node.done = true;
             return fn.apply(item);
         }catch (Throwable t) {
             throw new CombiningException(t);
         } finally {
+            node.op = null;
             combinePass(node);
         }
     }
 
     <R> boolean doFn(Node<E> node, E e) {
-        if (!node.done) {
+        if (node.op != null) {
             var fn = (Function<E, R>) node.op;
             try {
                 node.result = fn.apply(e);
-                node.op = null; //clear the operation, honestly this
             }catch (Throwable t) {
                 node.err = t;
             }

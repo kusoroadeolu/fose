@@ -37,9 +37,9 @@ class CombinerFields<E> extends CombinerPad2<E> {
     final boolean exposeMetrics;
 
     //metrics for benchmarks, could expose em?
-    int _combined;
-    int _passes;
-    int _total_ops;
+    long _combined;
+    long _passes;
+    long _total_ops;
 
     public CombinerFields(E item, int maxOps, boolean exposeMetrics) {
         this.item = item;
@@ -58,10 +58,9 @@ class CombinerPad3<E> extends CombinerFields<E> {
 }
 
 
-/*
+/**
 * The idea of flat combining was introduced in the 2010 SPAA paper, Flat
 * Combining and the Synchronization-Parallelism Tradeoff (Hendler, Incze, Shavit, Tzafrir)
-*
 *
 * Flat combining can be used as an alternative to fine-grained locking for making a
 * sequential structure thread-safe while minimizing the synchronization overhead and cache coherence
@@ -72,7 +71,7 @@ class CombinerPad3<E> extends CombinerFields<E> {
 * a node object, containing its operation (expressed through a function/consumer lambda)
 * and periodically checking whether its operation has been applied or the lock is held.
 *
-* The publication queue is an implementation of the Dmitry Vyukov MPSC unbounded queue
+* The publication queue uses an implementation of the Dmitry Vyukov MPSC unbounded queue
 * Enqueues onto the queue involve an atomic xchg operation of the queue's tail to a thread's node
 * and then linking the previous tail's next ptr to the thread's node. This allows enqueues to be wait free and avoid CAS retry storms which can greatly reduce performance under high contention
 * There is a brief moment in time between swapping the queue's tail and linking the previous tail's next node in which the queue's state observed by a traversing lock holder could be inconsistent.
@@ -138,10 +137,10 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
         head = tail = new Node<>(null);
     }
 
-    public Stats stats() {
+    public CombinerMetrics metrics() {
         lock.lock();
         try {
-            return new Stats(_total_ops, _passes, _combined, (double) _total_ops / _passes);
+            return new CombinerMetrics(_total_ops, _passes, _combined, (double) _total_ops / _passes);
         }finally {
             lock.unlock();
         }
@@ -216,15 +215,7 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
 
     abstract void combinePass();
 
-    void lock() {
-        lock.lock();
-    }
-
-    void unlock() {
-        lock.unlock();
-    }
-
-    void resetStats() {
+    public void resetMetrics() {
         lock.lock();
         try {
             _total_ops = 0;

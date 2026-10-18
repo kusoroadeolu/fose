@@ -4,26 +4,25 @@ import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 
 class Node<E> {
-    Object op; // to allow for handling errs? we should probably wrap the result in
+    Object op;
     Throwable err;
     Node<E> next;
     Object result;
-    boolean done;
 
     public Node(Object op) {
        this.op = op;
    }
 
     public void srDone() {
-        DONE.setRelease(this, true);
+        OP.setRelease(this, null);
     }
 
-    public void srNext(Node<E> request) {
-        NEXT.setRelease(this, request);
+    public void srNext(Node<E> node) {
+        NEXT.setRelease(this, node);
     }
 
     public boolean laDone() {
-        return (boolean) DONE.getAcquire(this);
+        return OP.getAcquire(this) ==  null;
     }
 
 
@@ -31,13 +30,13 @@ class Node<E> {
         return (Node<E>) NEXT.getVolatile(this);
     }
 
-    static final VarHandle DONE;
+    static final VarHandle OP;
     static final VarHandle NEXT;
 
     static {
         var lookup = MethodHandles.lookup();
         try {
-            DONE = lookup.findVarHandle(Node.class, "done", boolean.class);
+            OP = lookup.findVarHandle(Node.class, "op", Object.class);
             NEXT = lookup.findVarHandle(Node.class, "next", Node.class);
         }catch (NoSuchFieldException | IllegalAccessException e) {
             throw new RuntimeException(e);

@@ -4,10 +4,7 @@ import org.jetbrains.lincheck.Lincheck;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.StampedLock;
-
-class CombinerTest {
+class CombinerLincheckTest {
     static class Adder {
         int i;
 
