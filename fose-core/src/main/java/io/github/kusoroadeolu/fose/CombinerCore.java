@@ -255,9 +255,4 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
             throw new ExceptionInInitializerError(e);
         }
     }
-
-    static void main() {
-        var str  = ClassLayout.parseClass(CombinerCore.class).toPrintable();
-        System.out.println(str);
-    }
 }
