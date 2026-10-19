@@ -46,7 +46,7 @@ With metrics enabled, `combiner.metrics()` returns a `CombinerMetrics`:
 
 ## Benchmarks
 
-JMH, compared against a `StampedLock` write lock guarding the same data. Numbers are average `ns/op` per thread, so lower is better.
+These benchmarks are built using JMH compared against a `StampedLock` write lock guarding the same data. Numbers are average `ns/op` per thread, so lower is better.
 
 Machine: 4 core Intel i5, 8 CPUs, 16 GB RAM on a Windows OS. Results from a single machine, so treat them as indicative, not universal. Rows past 8 threads are oversubscribed.
 
@@ -73,8 +73,6 @@ Each op pops the min of a 65,536-element binary heap and reinserts `min + random
 | 4 | -28.2% | -60.5% |
 | 8 | -12.5% | -70.2% |
 | 16 | -9.9% | -69.5% |
-
-Single-threaded, there's no meaningful difference, which is the intent. The gap opens up as contention does.
 
 ## Building and running
 
