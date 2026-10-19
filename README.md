@@ -1,9 +1,9 @@
 # fose
 
-A flat combining primitive for Java. Flat combining allows threads to apply operations to a shared object on each other's behalf, instead of all queueing up behind a lock.
+A flat combining primitive for Java. Flat combining allows threads to apply operations to a shared object on each other's behalf, when contention on a lock is detected.
 ## Usage
 
-You can simply a sequential object, then submit operations against it:
+You can simply wrap a sequential object, then submit operations against it:
 
 ```java
 class ThreadSafePriorityQueue<E> {
