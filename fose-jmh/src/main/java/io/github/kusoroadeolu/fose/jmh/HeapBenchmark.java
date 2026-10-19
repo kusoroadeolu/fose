@@ -13,9 +13,9 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.StampedLock;
 import java.util.function.Function;
 
-@Fork(value = 2, jvmArgs = {JvmArgs.INITIAL_HEAP_SIZE, JvmArgs.MAX_HEAP_SIZE, JvmArgs.GC_TYPE})
-@Measurement(iterations = 5, time = 1)
+@Fork(value = 3, jvmArgs = {JvmArgs.INITIAL_HEAP_SIZE, JvmArgs.MAX_HEAP_SIZE, JvmArgs.GC_TYPE})
 @Warmup(iterations = 5, time = 1)
+@Measurement(iterations = 10, time = 1)
 @BenchmarkMode(Mode.AverageTime)
 @OutputTimeUnit(TimeUnit.NANOSECONDS)
 public class HeapBenchmark {
@@ -55,7 +55,7 @@ public class HeapBenchmark {
             h[i] = v;
         }
 
-        // pop min, insert min + random delta, so size stays constant
+        // pop min, insert min + random delta, so size stays constant, no gc interference
         long hold() {
             long min = h[0];
             siftDown(0, min + (next() & DELTA_MASK));
