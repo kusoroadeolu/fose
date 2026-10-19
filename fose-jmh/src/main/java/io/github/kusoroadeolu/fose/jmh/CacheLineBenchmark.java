@@ -85,7 +85,7 @@ public class CacheLineBenchmark {
         @Setup(Level.Iteration)
         public void claimed() {
             claimed = new AtomicBoolean(false);
-            combiner.resetStats();
+            combiner.resetMetrics();
         }
 
         @Setup(Level.Trial)
@@ -93,7 +93,7 @@ public class CacheLineBenchmark {
             baseData = new Data(lines);
             combData = new Data(lines);
             lock = new StampedLock().asWriteLock();
-            combiner = new Combiner<>(combData, MAX_COMBINING_OPS, true);
+            combiner = Combiner.builder(combData).exposeMetrics().maxCombiningOperations(MAX_COMBINING_OPS).build();
         }
 
         @TearDown(Level.Trial)

@@ -91,7 +91,8 @@ public class HeapBenchmark {
         public void setup() {
             baseData = new HeapData(size);
             combData = new HeapData(size);
-            combiner = new Combiner<>(combData, MAX_COMBINING_OPS, true);
+            combiner = Combiner.builder(combData).exposeMetrics().maxCombiningOperations(MAX_COMBINING_OPS).build();
+
             lock = new StampedLock().asWriteLock();
         }
 
