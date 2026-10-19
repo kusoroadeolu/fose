@@ -188,6 +188,10 @@ public class HeapBenchmark {
 
 
 /*
+ * Machine: 4 core intel i5 cpu, 8 cpus and 16 ram
+ * */
+
+/*
 =====================================================================
 HEAP BENCHMARK: combinedHold vs baselineHold   (Size=65536, Work=0)
 =====================================================================

@@ -192,6 +192,9 @@ public class CacheLineBenchmark {
     }
 }
 
+/*
+* Machine: 4 core intel i5 cpu, 8 cpus and 16 ram
+* */
 
 /*
 =====================================================================
