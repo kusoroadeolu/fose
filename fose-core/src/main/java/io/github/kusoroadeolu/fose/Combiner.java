@@ -1,7 +1,5 @@
 package io.github.kusoroadeolu.fose;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.locks.Lock;
 import java.util.function.Consumer;
@@ -263,27 +261,3 @@ public class Combiner<E> extends CombinerCore<E> {
 }
 
 
-class ListHolder {
-    public List<Integer> list;
-
-    ListHolder() {
-        list = new ArrayList<>();
-
-    }
-}
-
-class GenericHolder<E> {
-    final E item;
-
-    public GenericHolder(E item) {
-        this.item = item;
-    }
-
-    public static void main(String[] args) {
-        ListHolder l = new ListHolder();
-        l.list.add(1);
-        l.list.add(2);
-
-        var h = new GenericHolder<>(new ListHolder());
-    }
-}

@@ -4,7 +4,10 @@ import org.jetbrains.lincheck.Lincheck;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.Arrays;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Queue;
 
 class CombinerLincheckTest {
     static class Adder {

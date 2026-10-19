@@ -227,6 +227,7 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
     abstract void combinePass();
 
     public void resetMetrics() {
+        if (!exposeMetrics) return;
         lock.lock();
         try {
             _total_ops = 0;
