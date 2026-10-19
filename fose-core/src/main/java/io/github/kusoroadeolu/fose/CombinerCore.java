@@ -44,12 +44,7 @@ class CombinerFields<E> extends CombinerPad2<E> {
     long _total_ops;
 
     public CombinerFields(E item, int maxOps, boolean exposeMetrics) {
-        lock.lock();
-        try {
-            this.item = item; //purely for visibility
-        }finally {
-            lock.unlock();
-        }
+        this.item = item;
         this.maxOps = maxOps;
         this.exposeMetrics = exposeMetrics;
     }
@@ -79,7 +74,7 @@ class CombinerPad3<E> extends CombinerFields<E> {
 * and periodically checking whether its operation has been applied or the lock is held.
 *
 * The publication queue uses an implementation of the Dmitry Vyukov MPSC unbounded queue
-* Enqueues onto the queue involve an atomic xchg operation of the queue's tail to a thread's node
+ * Enqueues onto the queue involve an atomic xchg operation of the queue's tail to a thread's node
 * and then linking the previous tail's next ptr to the thread's node. This allows enqueues to be wait free and avoid CAS retry storms which can greatly reduce performance under high contention
 * There is a brief moment in time between swapping the queue's tail and linking the previous tail's next node in which the queue's state observed by a traversing lock holder could be inconsistent.
 * Hence, a combining operation, is exited once a lock holder encounters this inconsistency.
@@ -97,7 +92,12 @@ class CombinerPad3<E> extends CombinerFields<E> {
 * A lock holder can hop past the node of a stalled producer (preempted between its xchg and its link) that would otherwise block it from reaching every node behind it. To
 * alleviate this, the lock holder that owns a node and hits a null next before having passed its own node hops to that node and keeps applying from there, since
 * its own node is always reachable through its own next pointer. The hop never moves head and never unlinks to prevent, so the skipped region is reachable from the head
-*/
+*
+*
+* References:
+* [1] Flat Combining and the Synchronization-Parallelism Tradeoff (Hendler, Incze, Shavit, Tzafrir)
+* [2] Revisiting the combining synchronization technique (Fatourou, Kallimanis)
+ * */
 abstract class CombinerCore<E> extends CombinerPad3<E> {
 
     /**

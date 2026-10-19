@@ -6,7 +6,7 @@
     <parent>
         <groupId>io.github.kusoroadeolu</groupId>
         <artifactId>fose</artifactId>
-        <version>1.0.0</version>
+        <version>0.1.0</version>
     </parent>
 
     <artifactId>fose-core</artifactId>
@@ -18,11 +18,5 @@
 <!--            <version>0.17</version>-->
 <!--        </dependency>-->
 <!--    </dependencies>-->
-
-    <properties>
-        <maven.compiler.source>25</maven.compiler.source>
-        <maven.compiler.target>25</maven.compiler.target>
-        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    </properties>
 
 </project>

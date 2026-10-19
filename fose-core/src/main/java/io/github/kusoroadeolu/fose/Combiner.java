@@ -1,5 +1,7 @@
 package io.github.kusoroadeolu.fose;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.locks.Lock;
 import java.util.function.Consumer;
@@ -41,7 +43,6 @@ import java.util.function.Function;
  */
 public class Combiner<E> extends CombinerCore<E> {
     Combiner(E item) {
-        Objects.requireNonNull(item, "Item cannot be null");
         super(item);
     }
 
@@ -258,5 +259,31 @@ public class Combiner<E> extends CombinerCore<E> {
         public Combiner<E> build() {
             return new Combiner<>(item, maxCombiningOperations, exposeMetrics);
         }
+    }
+}
+
+
+class ListHolder {
+    public List<Integer> list;
+
+    ListHolder() {
+        list = new ArrayList<>();
+
+    }
+}
+
+class GenericHolder<E> {
+    final E item;
+
+    public GenericHolder(E item) {
+        this.item = item;
+    }
+
+    public static void main(String[] args) {
+        ListHolder l = new ListHolder();
+        l.list.add(1);
+        l.list.add(2);
+
+        var h = new GenericHolder<>(new ListHolder());
     }
 }
