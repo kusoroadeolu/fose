@@ -27,7 +27,7 @@ Requires Java 17.
 ## Configuration
 
 ```java
-Combiner<Heap> combiner = Combiner.builder(heap)
+Combiner<PriorityQueue<Integer>> combiner = Combiner.builder(new PriorityQueue<Integer>())
         .maxCombiningOperations(100) // max ops a lock holder serves per pass (default 100)
         .exposeMetrics()             // off by default
         .build();
@@ -46,13 +46,15 @@ With metrics enabled, `combiner.metrics()` returns a `CombinerMetrics`:
 
 ## Benchmarks
 
-These benchmarks are built using JMH compared against a `StampedLock` write lock guarding the same data. Numbers are average `ns/op` per thread, so lower is better.
+These benchmarks are built using JMH compared against a `StampedLock` write lock guarding the same data. 
+Numbers are average latency per thread measured in nanoseconds
 
-Machine: 4 core Intel i5, 8 CPUs, 16 GB RAM on a Windows OS. Results from a single machine, so treat them as indicative, not universal. Rows past 8 threads are oversubscribed.
+These results were gotten on a 4 core Intel i5, 8 CPUs, 16 GB RAM on a Windows 11 OS. 
+Note that rows past 8 threads are oversubscribed.
 
 ### Cache line benchmark
 
-Each op updates 5 counters spread over separate cache lines, then does ~1000 units of work outside the lock.
+Each operation updates 5 counters spread over separate cache lines, then does ~1000 units of work after the operation.
 
 | Threads | `add` baseline | `add` combined | Diff | `fetchAdd` diff |
 |---|---|---|---|---|
@@ -64,7 +66,8 @@ Each op updates 5 counters spread over separate cache lines, then does ~1000 uni
 
 ### Heap benchmark
 
-Each op pops the min of a 65,536-element binary heap and reinserts `min + random delta`, so the size stays constant.
+Each operation removes the min of a 65,536-element binary heap and reinserts a new number 
+then does either 0 or 500 units of work after the operations
 
 | Threads | work=0 diff | work=500 diff |
 |---|---|---|

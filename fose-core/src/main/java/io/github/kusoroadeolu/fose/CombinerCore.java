@@ -87,7 +87,7 @@ class CombinerPad3<E> extends CombinerFields<E> {
  * combining pass could be exited once the lock holder encounters this
  * inconsistency.
  *
- * Note that a lock holder can also perform some out-of-order executions by
+ * Note that a lock holder can also execute some operations out-of-order by
  * hopping past the node of a stalled producer (one preempted between its xchg
  * and its link), which would otherwise block the holder from reaching every
  * node behind it. To alleviate this, a lock holder that owns a node and hits a
