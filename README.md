@@ -98,3 +98,6 @@ mvn test
 |---|---|
 | `fose-core` | `Combiner` and its internals |
 | `fose-jmh` | JMH benchmarks |
+
+## License
+MIT
