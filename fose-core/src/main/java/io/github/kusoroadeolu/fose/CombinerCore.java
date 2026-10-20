@@ -33,7 +33,8 @@ class CombinerPad2<E> extends CombinerWaiterField<E> {
 class CombinerFields<E> extends CombinerPad2<E> {
     Node<E> head;
     final E item;
-    //ideally we'd use an int, but to avoid hotspot reordering this with the tail fail due to alignment gaps, we use a long
+    //ideally we'd use an int, but to avoid hotspot reordering this with the tail fail due to alignment gaps,
+    // we use a long
     //will switch to byte padding later to avoid this
     final long maxOps; //max operations per combining session
     final boolean exposeMetrics;
@@ -61,43 +62,61 @@ class CombinerPad3<E> extends CombinerFields<E> {
 
 
 /*
-* The idea of flat combining was introduced in the 2010 SPAA paper, Flat
-* Combining and the Synchronization-Parallelism Tradeoff (Hendler, Incze, Shavit, Tzafrir)
-*
-* Flat combining can be used as an alternative to fine-grained locking for making a
-* sequential structure thread-safe while minimizing the synchronization overhead and cache coherence
-* faced when waiting to acquire a lock.
-*
-* The basic idea of flat combining is when a thread finds a lock contended, it can
-* request for its operation to be applied by the lock holder. This is done by the thread enqueueing
-* a node object, containing its operation (expressed through a function/consumer lambda)
-* and periodically checking whether its operation has been applied or the lock is held.
-*
-* The publication queue uses an implementation of the Dmitry Vyukov MPSC unbounded queue
- * Enqueues onto the queue involve an atomic xchg operation of the queue's tail to a thread's node
-* and then linking the previous tail's next ptr to the thread's node. This allows enqueues to be wait free and avoid CAS retry storms which can greatly reduce performance under high contention
-* There is a brief moment in time between swapping the queue's tail and linking the previous tail's next node in which the queue's state observed by a traversing lock holder could be inconsistent.
-* Hence, a combining operation, is exited once a lock holder encounters this inconsistency.
-*
-* A lock holder applies its own op, then drains up to maxOps nodes, bounding the time it spends serving others.
-*
-* Waiters use an escalating backoff strategy (from spin waiting to periodically sleeping) by tracking
-* the number of times they've missed acquiring the lock to make a local guess on how contended the structure or how deep their node is in the publication queue
-* and therefore increase the time spent waiting on their request rather than continuously retrying the lock.
-*
-* Interrupts are deferred while waiting (parkNanos would otherwise return
-* immediately and the node can't be abandoned once published) and restored on exit.
-* Exceptions thrown by a combined op are rethrown in the owning thread as CombiningException.
-*
-* A lock holder can hop past the node of a stalled producer (preempted between its xchg and its link) that would otherwise block it from reaching every node behind it. To
-* alleviate this, the lock holder that owns a node and hits a null next before having passed its own node hops to that node and keeps applying from there, since
-* its own node is always reachable through its own next pointer. The hop never moves head and never unlinks to prevent, so the skipped region is reachable from the head
-*
-*
-* References:
-* [1] Flat Combining and the Synchronization-Parallelism Tradeoff (Hendler, Incze, Shavit, Tzafrir)
-* [2] Revisiting the combining synchronization technique (Fatourou, Kallimanis)
- * */
+ * The idea of flat combining was introduced in the 2010 SPAA paper "Flat
+ * Combining and the Synchronization-Parallelism Tradeoff" (Hendler, Incze,
+ * Shavit, Tzafrir).
+ *
+ * Flat combining can be used as an alternative to fine-grained locking for
+ * making a sequential structure thread-safe, while minimizing the
+ * synchronization overhead and cache coherence traffic incurred when
+ * acquiring a lock.
+ *
+ * The basic idea is that when a thread finds the lock contended, it can
+ * request that its operation be applied by the lock holder. It does this by
+ * enqueueing a node containing its operation (expressed as a function or
+ * consumer lambda), and then periodically checking whether the operation has
+ * been applied or the lock has become available.
+ *
+ * The publication queue is an implementation of Dmitry Vyukov's unbounded
+ * MPSC queue. An enqueue atomically exchanges (xchg) the queue's tail with the
+ * thread's node and then links the previous tail's next pointer to that node.
+ * This makes enqueues wait-free and avoids CAS retry storms, which can greatly
+ * reduce performance under high contention. There is a brief window between
+ * swapping the tail and linking the previous tail's next pointer in which the
+ * queue observed by a traversing lock holder may be inconsistent. Hence, a
+ * combining pass could be exited once the lock holder encounters this
+ * inconsistency.
+ *
+ * Note that a lock holder can also perform some out-of-order executions by
+ * hopping past the node of a stalled producer (one preempted between its xchg
+ * and its link), which would otherwise block the holder from reaching every
+ * node behind it. To alleviate this, a lock holder that owns a node and hits a
+ * null next pointer before having passed its own node hops to its own node and
+ * keeps applying from there, since that node is always reachable through its
+ * own next pointer. The hop never modifies head and never unlinks the skipped
+ * nodes, so the skipped region is always reachable from head.
+ *
+ * A lock holder applies its own op, then drains up to maxOps nodes, bounding
+ * the time it spends serving others.
+ *
+ * Waiters use an escalating backoff strategy, from spin waiting to periodic
+ * sleeping. They track the number of times they have missed acquiring the lock
+ * to make a local guess at how contended the lock is, or how deep their node
+ * is in the queue, and increase the time spent waiting on their
+ * node rather than continuously retrying the lock.
+ *
+ * Interrupts are deferred while waiting (parkNanos would otherwise return
+ * immediately, and a node cannot be abandoned once published) and restored on
+ * exit. Exceptions thrown by a combined op are rethrown in the owning thread
+ * as CombiningException.
+ *
+ *
+ * References:
+ * [1] Flat Combining and the Synchronization-Parallelism Tradeoff
+ *     (Hendler, Incze, Shavit, Tzafrir)
+ * [2] Revisiting the combining synchronization technique
+ *     (Fatourou, Kallimanis)
+ */
 abstract class CombinerCore<E> extends CombinerPad3<E> {
 
     /**

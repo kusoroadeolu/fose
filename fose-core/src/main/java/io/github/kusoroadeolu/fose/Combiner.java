@@ -155,15 +155,9 @@ public class Combiner<E> extends CombinerCore<E> {
             prev = curr;
         }
 
-        if (exposeMetrics) {
-            ++this._passes;
-            if (ops > 0) {
-                ++this._combined;
-                _total_ops += ops;
-            }
-        }
-
         head = prev;
+
+        recordMetrics(ops);
     }
 
     void combinePass(Node<E> self) {
@@ -203,6 +197,10 @@ public class Combiner<E> extends CombinerCore<E> {
             }
         }
 
+        recordMetrics(ops);
+    }
+
+    void recordMetrics(int ops) {
         if (exposeMetrics) {
             ++this._passes;
             if (ops > 0) {
