@@ -11,10 +11,10 @@ class CombinerPad0 {
 }
 
 class CombinerLockField extends CombinerPad0 {
-    final Lock lock;
+    final StampedLock lock;
 
     public CombinerLockField() {
-        this.lock = new StampedLock().asWriteLock();
+        this.lock = new StampedLock();
     }
 }
 
@@ -168,21 +168,26 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
 
     public CombinerMetrics metrics() {
         if (!exposeMetrics) return CombinerMetrics.empty();
-        lock.lock();
-        try {
-            return new CombinerMetrics(_total_ops, _passes, _combined, _passes == 0 ? 0 : (double) _total_ops / _passes);
-        }finally {
-            lock.unlock();
+        for (;;) {
+            long stamp = lock.tryOptimisticRead();
+            long totalOps = _total_ops;
+            long passes = this._passes;
+            long combined = this._combined;
+            double avg = _passes == 0 ? 0 : (double) _total_ops / _passes;
+
+            if (lock.validate(stamp)) return new CombinerMetrics(totalOps, passes, combined, avg);
+            Thread.onSpinWait();
         }
     }
 
 
-    <R> R tryCombining(Object op, Lock lock) {
-        if (lock.tryLock()) {
+    <R> R tryCombining(Object op, StampedLock lock) {
+        long stamp;
+        if ((stamp = lock.tryWriteLock()) != 0) {
             try {
                 return doCombine(op);
             }finally {
-                lock.unlock();
+                lock.unlock(stamp);
             }
         }
 
@@ -216,11 +221,11 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
                     if (node.laDone()) break;
                 }
 
-                if (lock.tryLock()) {
+                if ((stamp = lock.tryWriteLock()) != 0) {
                     try {
                         return doCombineNode(node);
                     }finally {
-                        lock.unlock();
+                        lock.unlock(stamp);
                     }
                 }
 
@@ -247,13 +252,13 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
 
     public void resetMetrics() {
         if (!exposeMetrics) return;
-        lock.lock();
+        long stamp = lock.writeLock();
         try {
             _total_ops = 0;
             _passes = 0;
             _combined = 0;
         }finally {
-            lock.unlock();
+            lock.unlock(stamp);
         }
     }
 

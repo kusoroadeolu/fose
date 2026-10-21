@@ -2,6 +2,7 @@ package io.github.kusoroadeolu.fose;
 
 import java.util.Objects;
 import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.StampedLock;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -65,16 +66,17 @@ public class Combiner<E> extends CombinerCore<E> {
      */
     public <R> R apply(Function<? super E, ? extends R> operation) {
         Objects.requireNonNull(operation);
-        Lock lock = this.lock;
+        StampedLock lock = this.lock;
 
         if (IS_UNIPROCESSOR) {
-            lock.lock();
+
+            long stamp = lock.writeLock();
             try {
                 return operation.apply(item);
             } catch (Throwable t) {
                 throw new CombiningException(t);
             }finally {
-                lock.unlock();
+                lock.unlock(stamp);
             }
         }
 
@@ -257,5 +259,4 @@ public class Combiner<E> extends CombinerCore<E> {
         }
     }
 }
-
 
