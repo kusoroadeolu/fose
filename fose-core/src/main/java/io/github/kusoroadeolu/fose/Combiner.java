@@ -67,19 +67,6 @@ public class Combiner<E> extends CombinerCore<E> {
     public <R> R apply(Function<? super E, ? extends R> operation) {
         Objects.requireNonNull(operation);
         StampedLock lock = this.lock;
-
-        if (IS_UNIPROCESSOR) {
-
-            long stamp = lock.writeLock();
-            try {
-                return operation.apply(item);
-            } catch (Throwable t) {
-                throw new CombiningException(t);
-            }finally {
-                lock.unlock(stamp);
-            }
-        }
-
         return super.tryCombining(operation, lock);
     }
 

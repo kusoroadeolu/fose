@@ -2,7 +2,6 @@ package io.github.kusoroadeolu.fose;
 
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
-import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.StampedLock;
 
@@ -123,13 +122,6 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
      * Default maximum number of operations a combiner can serve in one pass
      * */
     static final int DEFAULT_MAX_COMBINING_OPERATIONS = 100;
-
-    /**
-     * Number of available processors
-     * */
-    static final int NCPU = Runtime.getRuntime().availableProcessors();
-
-    static final boolean IS_UNIPROCESSOR = NCPU == 1;
 
     /**
      * Number of steps a spinning thread takes before yielding

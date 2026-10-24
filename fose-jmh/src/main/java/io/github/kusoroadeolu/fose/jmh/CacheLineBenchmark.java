@@ -17,7 +17,7 @@ import java.util.function.Function;
 @Fork(value = 3, jvmArgs = {JvmArgs.INITIAL_HEAP_SIZE, JvmArgs.MAX_HEAP_SIZE, JvmArgs.GC_TYPE})
 @Warmup(iterations = 5, time = 1)
 @Measurement(iterations = 10, time = 1)
-@BenchmarkMode(Mode.AverageTime)
+@BenchmarkMode(Mode.SampleTime)
 @OutputTimeUnit(TimeUnit.NANOSECONDS)
 public class CacheLineBenchmark {
 
@@ -40,14 +40,6 @@ public class CacheLineBenchmark {
             }
         }
 
-        long fetchAdd() {
-            long old = x[PAD];
-            for (int i = 0; i < lines; i++) {
-                x[PAD + i * STRIDE] = old + 1;
-            }
-            return old;
-        }
-
         // Will throw if mutual exclusion was ever broken, returns the counter otherwise.
         void verify() {
             long v = x[PAD];
@@ -65,21 +57,20 @@ public class CacheLineBenchmark {
         return null;
     };
 
-    static final Function<Data, Object> FETCH_ADD = Data::fetchAdd; // will box the result
-    private static final int MAX_COMBINING_OPS = 100;
 
     @State(Scope.Benchmark)
-    public static class Shared {
+    public static class CombinerState {
         @Param({"5"})
         public int lines;
 
-        @Param({"1000"})
+        @Param({"0"})
         public int work;
 
-        Data baseData;
+        @Param({"25", "100", "175"})
+        public int maxCombingOps;
+
         Data combData;
         Combiner<Data> combiner;
-        Lock lock;
         AtomicBoolean claimed;
 
         @Setup(Level.Iteration)
@@ -90,26 +81,23 @@ public class CacheLineBenchmark {
 
         @Setup(Level.Trial)
         public void setup() {
-            baseData = new Data(lines);
             combData = new Data(lines);
-            lock = new StampedLock().asWriteLock();
-            combiner = Combiner.builder(combData).exposeMetrics().maxCombiningOperations(MAX_COMBINING_OPS).build();
+            combiner = Combiner.builder(combData).exposeMetrics().maxCombiningOperations(maxCombingOps).build();
         }
 
         @TearDown(Level.Trial)
         public void tearDown() {
-            baseData.verify();
             combData.verify();
         }
 
         @State(Scope.Thread)
         @AuxCounters(AuxCounters.Type.EVENTS)
         public static class SharedCounters {
-            Shared shared;
+            CombinerState shared;
             boolean reporter;
 
             @Setup(Level.Iteration)
-            public void claim(Shared shared) {
+            public void claim(CombinerState shared) {
                 this.shared = shared;
                 this.reporter = shared.claimed.compareAndSet(false, true);
             }
@@ -129,49 +117,64 @@ public class CacheLineBenchmark {
 
                 return 0;
             }
+
+            public double avgOps() {
+                if (reporter) {
+                    return shared.combiner.metrics().combinedOperationsPerPass();
+                }
+
+                return 0;
+            }
+        }
+    }
+
+    @State(Scope.Benchmark)
+    public static class LockState {
+        @Param({"5"})
+        public int lines;
+
+        @Param({"0"})
+        public int work;
+
+
+        Data baseData;
+        Lock lock;
+
+
+        @Setup(Level.Trial)
+        public void setup() {
+            baseData = new Data(lines);
+            lock = new StampedLock().asWriteLock();
+        }
+
+        @TearDown(Level.Trial)
+        public void tearDown() {
+            baseData.verify();
         }
     }
 
     @Benchmark
-    public void baselineAdd(Shared s,Shared.SharedCounters sc) {
-        s.lock.lock();
+    public void baselineAdd(LockState sc) {
+        sc.lock.lock();
         try {
-            s.baseData.add();
+            sc.baseData.add();
         } finally {
-            s.lock.unlock();
+            sc.lock.unlock();
         }
-        Blackhole.consumeCPU(s.work);
-    }
-
-    @Benchmark
-    public Object baselineFetchAdd(Shared s, Shared.SharedCounters sc) {
-        Object r;
-        s.lock.lock();
-        try {
-            r = s.baseData.fetchAdd(); // boxed, to match the combiner's Function<E,Object>
-        } finally {
-            s.lock.unlock();
-        }
-        Blackhole.consumeCPU(s.work);
-        return r;
+        Blackhole.consumeCPU(sc.work);
     }
 
 
-    @Benchmark
-    public Object combinedAdd(Shared s, Shared.SharedCounters sc) {
-        Object r = s.combiner.apply(ADD);
-        Blackhole.consumeCPU(s.work);
-        return r;
-    }
 
-    @Benchmark
-    public Object combinedFetchAdd(Shared s, Shared.SharedCounters sc) {
-        Object r = s.combiner.apply(FETCH_ADD);
-        Blackhole.consumeCPU(s.work);
-        return r;
-    }
+//    @Benchmark
+//    public Object combinedAdd(CombinerState s, CombinerState.SharedCounters sc) {
+//        Object r = s.combiner.apply(ADD);
+//        Blackhole.consumeCPU(s.work);
+//        return r;
+//    }
 
-   static final int[] THREAD_SWEEP = {1, 2, 3, 4, 6, 8, 16, 24, 32, 48, 64};
+
+   static final int[] THREAD_SWEEP = {4, 6, 8, 16, 24, 32, 48, 64};
     public static void main(String[] args) throws Exception {
         int cores = Runtime.getRuntime().availableProcessors();
         for (int t : THREAD_SWEEP) {
@@ -209,20 +212,4 @@ Threads | Baseline (ns/op)    | Combined (ns/op)    | Diff     | Passes      | C
 6       | 2452.909 ± 76.177   | 2081.865 ± 11.997   | -15.1%   |  81,123,148 | 5,068,870
 8       | 3480.160 ± 243.218  | 2168.774 ± 33.825   | -37.7%   | 110,415,755 | 1,930,051
 16      | 8214.974 ± 234.697  | 4340.719 ± 99.196   | -47.2%   | 122,097,677 | 2,019,508 oversubscribed
-
-
-=====================================================================
-CACHE LINE BENCHMARK: combinedFetchAdd vs baselineFetchAdd   (Lines=5, Work=1000)
-=====================================================================
-Threads | Baseline (ns/op)    | Combined (ns/op)    | Diff     | Passes      | Combined
---------|---------------------|---------------------|----------|-------------|----------
-1       | 1637.747 ± 16.421   | 1642.353 ± 47.474   |  +0.3%   |  18,307,429 | 0
-2       | 1804.282 ± 125.878  | 1743.515 ± 18.423   |  -3.4%   |  34,376,997 | 64,962
-3       | 1936.079 ± 72.423   | 1807.115 ± 13.879   |  -6.7%   |  49,611,650 | 204,970
-4       | 2342.238 ± 182.593  | 1912.405 ± 32.475   | -18.4%   |  61,803,152 | 879,482
-6       | 3000.317 ± 270.656  | 2101.295 ± 16.281   | -30.0%   |  80,133,773 | 4,787,114
-8       | 4752.249 ± 269.881  | 2175.700 ± 32.708   | -54.2%   | 108,364,764 | 2,750,603
-16      | 9748.139 ± 576.991  | 4450.680 ± 77.904   | -54.3%   | 119,253,690 | 2,543,690 oversubscribed
-* */
-
-
+*/

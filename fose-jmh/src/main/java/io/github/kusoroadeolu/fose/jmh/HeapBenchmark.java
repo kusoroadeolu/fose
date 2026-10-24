@@ -16,7 +16,7 @@ import java.util.function.Function;
 @Fork(value = 3, jvmArgs = {JvmArgs.INITIAL_HEAP_SIZE, JvmArgs.MAX_HEAP_SIZE, JvmArgs.GC_TYPE})
 @Warmup(iterations = 5, time = 1)
 @Measurement(iterations = 10, time = 1)
-@BenchmarkMode(Mode.AverageTime)
+@BenchmarkMode(Mode.SampleTime)
 @OutputTimeUnit(TimeUnit.NANOSECONDS)
 public class HeapBenchmark {
 
@@ -71,29 +71,26 @@ public class HeapBenchmark {
     }
 
     static final Function<HeapData, Object> HOLD = HeapData::hold;
-    private static final int MAX_COMBINING_OPS = 100;
-
 
     @State(Scope.Benchmark)
-    public static class Shared {
+    public static class CombinerState {
         @Param({"65536"})   // 512 KB of longs, bigger than my L1 cache
         public int size;
 
         @Param({"0"})
         public int work;
 
-        HeapData baseData;
+        @Param({"25", "100", "175"})
+        public int maxCombingOps;
+
         HeapData combData;
         Combiner<HeapData> combiner;
-        Lock lock;
+
 
         @Setup(Level.Trial)
         public void setup() {
-            baseData = new HeapData(size);
             combData = new HeapData(size);
-            combiner = Combiner.builder(combData).exposeMetrics().maxCombiningOperations(MAX_COMBINING_OPS).build();
-
-            lock = new StampedLock().asWriteLock();
+            combiner = Combiner.builder(combData).exposeMetrics().maxCombiningOperations(maxCombingOps).build();
         }
 
         AtomicBoolean claimed;
@@ -106,18 +103,17 @@ public class HeapBenchmark {
 
         @TearDown(Level.Trial)
         public void tearDown() {
-            baseData.verify();
             combData.verify();  //should we collect these in aux counters as well?
         }
 
         @State(Scope.Thread)
         @AuxCounters(AuxCounters.Type.EVENTS)
         public static class SharedCounters {
-            Shared shared;
+            CombinerState shared;
             boolean reporter;
 
             @Setup(Level.Iteration)
-            public void claim(Shared shared) {
+            public void claim(CombinerState shared) {
                 this.shared = shared;
                 this.reporter = shared.claimed.compareAndSet(false, true);
             }
@@ -148,8 +144,40 @@ public class HeapBenchmark {
         }
     }
 
+    @State(Scope.Benchmark)
+    public static class LockState {
+        @Param({"65536"})   // 512 KB of longs, bigger than my L1 cache
+        public int size;
+
+        @Param({"0"})
+        public int work;
+
+        HeapData baseData;
+        Lock lock;
+
+        @Setup(Level.Trial)
+        public void setup() {
+            baseData = new HeapData(size);
+            lock = new StampedLock().asWriteLock();
+        }
+
+        AtomicBoolean claimed;
+
+        @Setup(Level.Iteration)
+        public void claimed() {
+            claimed = new AtomicBoolean(false);
+        }
+
+        @TearDown(Level.Trial)
+        public void tearDown() {
+            baseData.verify();  //should we collect these in aux counters as well?
+        }
+    }
+
+
+
     @Benchmark
-    public Object baselineHold(Shared s, Shared.SharedCounters sc) {
+    public Object baselineHold(LockState s) {
         Object r;
         s.lock.lock();
         try {
@@ -162,13 +190,13 @@ public class HeapBenchmark {
     }
 
     @Benchmark
-    public Object combinedHold(Shared s, Shared.SharedCounters sc) {
+    public Object combinedHold(CombinerState s, CombinerState.SharedCounters sc) {
         Object r = s.combiner.apply(HOLD);
         Blackhole.consumeCPU(s.work);
         return r;
     }
 
-    static final int[] THREAD_SWEEP = {1, 2, 3, 4, 6, 8, 16, 24, 32, 48, 64};
+    static final int[] THREAD_SWEEP = {2, 3, 4, 6, 8, 16, 24, 32, 48, 64};
     public static void main(String[] args) throws Exception {
         int cores = Runtime.getRuntime().availableProcessors();
         for (int t : THREAD_SWEEP) {
