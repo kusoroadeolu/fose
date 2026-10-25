@@ -59,3 +59,191 @@ class CombinerPad3<E> extends CombinerFields<E> {
 }
 
 
+/*
+ * The idea of flat combining was introduced in the 2010 SPAA paper "Flat
+ * Combining and the Synchronization-Parallelism Tradeoff" (Hendler, Incze,
+ * Shavit, Tzafrir).
+ *
+ * Flat combining can be used as an alternative to fine-grained locking for
+ * making a sequential structure thread-safe, while minimizing the
+ * synchronization overhead and cache coherence traffic incurred when
+ * acquiring a lock.
+ *
+ * The basic idea is that when a thread finds the lock contended, it can
+ * request that its operation be applied by the lock holder. It does this by
+ * enqueueing a node containing its operation (expressed as a function or
+ * consumer lambda), and then periodically checking whether the operation has
+ * been applied or the lock has become available.
+ *
+ * The publication queue is an implementation of Dmitry Vyukov's unbounded
+ * MPSC queue. An enqueue atomically exchanges (xchg) the queue's tail with the
+ * thread's node and then links the previous tail's next pointer to that node.
+ * This makes enqueues wait-free and avoids CAS retry storms, which can greatly
+ * reduce performance under high contention. There is a brief window between
+ * swapping the tail and linking the previous tail's next pointer in which the
+ * queue observed by a traversing lock holder may be inconsistent. Hence, a
+ * combining pass could be exited once the lock holder encounters this
+ * inconsistency.
+ *
+ * A lock holder applies its own op, then drains up to maxOps nodes, bounding
+ * the time it spends serving others.
+ *
+ * Waiters use an escalating backoff strategy, from spin waiting to periodic
+ * sleeping. They track the number of times they have missed acquiring the lock
+ * to make a local guess at how contended the lock is, or how deep their node
+ * is in the queue, and increase the time spent waiting on their
+ * node rather than continuously retrying the lock.
+ *
+ * Interrupts are deferred while waiting (parkNanos would otherwise return
+ * immediately, and a node cannot be abandoned once published) and restored on
+ * exit. Exceptions thrown by a combined op are rethrown in the owning thread
+ * as CombiningException.
+ *
+ *
+ * References:
+ * [1] Flat Combining and the Synchronization-Parallelism Tradeoff
+ *     (Hendler, Incze, Shavit, Tzafrir)
+ * [2] Revisiting the combining synchronization technique
+ *     (Fatourou, Kallimanis)
+ */
+abstract class CombinerCore<E> extends CombinerPad3<E> {
+
+    /**
+     * Default maximum number of operations a combiner can serve in one pass
+     * */
+    static final int DEFAULT_MAX_COMBINING_OPERATIONS = 25;
+
+    static final int NCPU = Runtime.getRuntime().availableProcessors();
+
+
+    CombinerCore(E item) {
+        super(item, DEFAULT_MAX_COMBINING_OPERATIONS, false);
+        head = tail = new Node<>(null);
+    }
+
+    CombinerCore(E item, int maxCombiningOperations, boolean exposeMetrics) {
+        super(item, maxCombiningOperations, exposeMetrics);
+        head = tail = new Node<>(null);
+    }
+
+    <R> R tryCombining(Object op) {
+        boolean wasInterrupted = false;
+        Node<E> node = null, prev = null;
+        Thread w = Thread.currentThread();
+        try {
+             boolean first = false;
+             boolean park = false;
+             long seq = 0;
+
+             for (;;) {
+                 if (prev != null && prev.next == null) break;
+
+                 if (first || prev == null || (first = (prev == head))) {
+                     if (acquire()) {
+                         if (first) return combineEnqueued(prev, node);
+                         else return combine(op);
+                     }
+                 }
+
+                 if (node == null) {
+                     node = new Node<>(op);
+                 } else if (prev == null) {
+                     node.waiter = w;
+                     prev = exchangeTail(node);
+
+
+                     prev.next = node; //make visible to combiner
+                 }else if (node.status == 0) {
+                     node.status = Node.PARKING; //notify as waiting
+                 } else {
+                     LockSupport.park(this);
+                     if (!wasInterrupted && Thread.interrupted()) wasInterrupted = true;
+                     node.clearStatus();
+                 }
+
+             }
+        }finally {
+            if (wasInterrupted) Thread.currentThread().interrupt(); //reset interrupt flag
+        }
+
+        return result(node);
+    }
+
+    <R> R result(Node<E> node) {
+        if (node.err != null) {
+            Throwable t = node.err;
+            cleanNode(node);
+            throw new CombiningException(t);
+        } else {
+            Object o = node.result;
+            cleanNode(node);
+            return (R) o;
+        }
+    }
+
+    private void cleanNode(Node<E> node) {
+        node.err = null;
+        node.op = null;
+        node.result = null;
+    }
+
+    boolean acquire() {
+        return state == FREE && (long) STATE.getAndAdd(this, 1) == FREE;
+    }
+
+    void release() {
+        STATE.setRelease(this, FREE);
+    }
+
+    Node<E> getHeadPlain() {
+        return (Node<E>) HEAD.get(this);
+    }
+
+
+    abstract <R> R combine(Object o);
+
+    abstract <R> R combineEnqueued(Node<E> prev, Node<E> node);
+
+    abstract void combinePass();
+
+    public CombinerMetrics metrics() {
+        while (!acquire()) Thread.onSpinWait();
+        try {
+            return new CombinerMetrics(_total_ops, _passes, _combined, 0);
+        }finally {
+            release();
+        }
+    }
+
+    public void resetMetrics() {
+        while (!acquire()) Thread.onSpinWait();
+        try {
+            _total_ops = 0;
+            _passes = 0;
+            _combined = 0;
+        }finally {
+            release();
+        }
+    }
+
+
+    Node<E> exchangeTail(Node<E> with) {
+        return (Node<E>) TAIL.getAndSet(this, with);
+    }
+
+
+    static final VarHandle TAIL;
+    static final VarHandle HEAD;
+    static final VarHandle STATE;
+
+    static {
+        var lookup = MethodHandles.lookup();
+        try {
+            HEAD = lookup.findVarHandle(CombinerCore.class, "head", Node.class);
+            STATE = lookup.findVarHandle(CombinerCore.class, "state", long.class);
+            TAIL = lookup.findVarHandle(CombinerCore.class, "tail", Node.class);
+        }catch (NoSuchFieldException | IllegalAccessException e) {
+            throw new ExceptionInInitializerError(e);
+        }
+    }
+}
