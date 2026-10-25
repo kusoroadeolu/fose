@@ -9,7 +9,8 @@ public class BenchmarkRunner {
             new Runner(new CommandLineOptions(args)).run();
             return;
         }
-        //HeapBenchmark.main(args);
-        CacheLineBenchmark.main(args);
+
+        HeapBenchmark.main(args);
+        //CacheLineBenchmark.main(args);
     }
 }

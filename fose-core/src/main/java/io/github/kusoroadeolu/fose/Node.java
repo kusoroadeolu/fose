@@ -8,12 +8,13 @@ class Node<E> {
     Throwable err;
     Object result;
     Thread waiter;
-    volatile long seq = 0;
+    long seq;
     volatile int status;
     volatile Node<E> next;
 
     static final int PARKING = 1; //indicates a thread is about to park
     static final int SPINNING = 2;
+
 
     //Here, we'll do something quite similar to the waiting scheme in aqs
 
@@ -43,6 +44,7 @@ class Node<E> {
         STATUS.getAndBitwiseAnd(this, ~v);
     }
 
+
     static final VarHandle STATUS;
     static final VarHandle NEXT;
 
@@ -56,7 +58,4 @@ class Node<E> {
         }
     }
 
-    public Node<E> getNextPlain() {
-        return (Node<E>) NEXT.get(this);
-    }
 }

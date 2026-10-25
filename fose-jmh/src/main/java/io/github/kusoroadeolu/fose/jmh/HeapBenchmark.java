@@ -13,9 +13,9 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.StampedLock;
 import java.util.function.Function;
 
-@Fork(value = 3, jvmArgs = {JvmArgs.INITIAL_HEAP_SIZE, JvmArgs.MAX_HEAP_SIZE, JvmArgs.GC_TYPE})
+@Fork(value = 2, jvmArgs = {JvmArgs.INITIAL_HEAP_SIZE, JvmArgs.MAX_HEAP_SIZE, JvmArgs.GC_TYPE})
 @Warmup(iterations = 5, time = 1)
-@Measurement(iterations = 10, time = 1)
+@Measurement(iterations = 5, time = 1)
 @BenchmarkMode(Mode.SampleTime)
 @OutputTimeUnit(TimeUnit.NANOSECONDS)
 public class HeapBenchmark {
@@ -80,7 +80,7 @@ public class HeapBenchmark {
         @Param({"0"})
         public int work;
 
-        @Param({"25", "100", "175"})
+        @Param({"25"})
         public int maxCombingOps;
 
         HeapData combData;
@@ -176,18 +176,18 @@ public class HeapBenchmark {
 
 
 
-    @Benchmark
-    public Object baselineHold(LockState s) {
-        Object r;
-        s.lock.lock();
-        try {
-            r = s.baseData.hold();
-        } finally {
-            s.lock.unlock();
-        }
-        Blackhole.consumeCPU(s.work);
-        return r;
-    }
+//    @Benchmark
+//    public Object baselineHold(LockState s) {
+//        Object r;
+//        s.lock.lock();
+//        try {
+//            r = s.baseData.hold();
+//        } finally {
+//            s.lock.unlock();
+//        }
+//        Blackhole.consumeCPU(s.work);
+//        return r;
+//    }
 
     @Benchmark
     public Object combinedHold(CombinerState s, CombinerState.SharedCounters sc) {
@@ -196,7 +196,7 @@ public class HeapBenchmark {
         return r;
     }
 
-    static final int[] THREAD_SWEEP = {2, 3, 4, 6, 8, 16, 24, 32, 48, 64};
+    static final int[] THREAD_SWEEP = {4, 6, 8, 16, 24, 32, 48, 64};
     public static void main(String[] args) throws Exception {
         int cores = Runtime.getRuntime().availableProcessors();
         for (int t : THREAD_SWEEP) {

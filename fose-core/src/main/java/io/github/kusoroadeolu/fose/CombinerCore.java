@@ -113,7 +113,8 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
      * */
     static final int DEFAULT_MAX_COMBINING_OPERATIONS = 25;
 
-    static final int NCPU = Runtime.getRuntime().availableProcessors();
+    static final int SPIN_DEPTH = Runtime.getRuntime().availableProcessors() - 1;
+    static final int SPIN_ITERS = 1024;
 
 
     CombinerCore(E item) {
@@ -126,47 +127,97 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
         head = tail = new Node<>(null);
     }
 
+
+//    <R> R tryCombining(Object op) {
+//        boolean wasInterrupted = false;
+//        Node<E> node = null, prev = null;
+//        Thread w = Thread.currentThread();
+//        try {
+//            boolean first = false;
+//            for (;;) {
+//                if (prev != null && prev.next == null) break;
+//
+//                if (first || prev == null || (first = (prev == head))) {
+//                    if (acquire()) {
+//                        if (first) return combineEnqueued(prev, node);
+//                        else return combine(op);
+//                    }
+//                }
+//
+//                if (node == null) {
+//                    node = new Node<>(op);                 // node.seq defaults to UNKNOWN
+//                } else if (prev == null) {
+//                    node.waiter = w;
+//                    prev = exchangeTail(node);
+//                    prev.next = node;                      // publish
+//                }else if (node.status == 0) {
+//                    node.status = Node.PARKING;
+//                } else {
+//                    LockSupport.park(this);
+//                    if (!wasInterrupted && Thread.interrupted()) wasInterrupted = true;
+//                    node.clearStatus();
+//                }
+//            }
+//        } finally {
+//            if (wasInterrupted) Thread.currentThread().interrupt();
+//        }
+//        return result(node);
+//    }
+
     <R> R tryCombining(Object op) {
         boolean wasInterrupted = false;
         Node<E> node = null, prev = null;
         Thread w = Thread.currentThread();
         try {
-             boolean first = false;
-             boolean park = false;
-             long seq = 0;
+            boolean first = false;
 
-             for (;;) {
-                 if (prev != null && prev.next == null) break;
+            o: for (;;) {
+                if (prev != null && prev.next == null) break;
 
-                 if (first || prev == null || (first = (prev == head))) {
-                     if (acquire()) {
-                         if (first) return combineEnqueued(prev, node);
-                         else return combine(op);
-                     }
-                 }
+                if (first || prev == null || (first = (prev == head))) {
+                    if (acquire()) {
+                        if (first) return combineEnqueued(prev, node);
+                        else return combine(op);
+                    }
+                }
 
-                 if (node == null) {
-                     node = new Node<>(op);
-                 } else if (prev == null) {
-                     node.waiter = w;
-                     prev = exchangeTail(node);
+                if (node == null) {
+                    node = new Node<>(op);
+                } else if (prev == null) {
 
+                    node.waiter = w;
+                    var t = tail;
+                    long seq = t.seq;
+                    node.seq = seq + 1;
+                    if (!casTail(t, node)) continue;
 
-                     prev.next = node; //make visible to combiner
-                 }else if (node.status == 0) {
-                     node.status = Node.PARKING; //notify as waiting
-                 } else {
-                     LockSupport.park(this);
-                     if (!wasInterrupted && Thread.interrupted()) wasInterrupted = true;
-                     node.clearStatus();
-                 }
+                    prev = t;
+                    prev.next = node;
+                } else if (node.status == 0) {
+                    node.status = shouldSpin(node) ? Node.SPINNING : Node.PARKING;
+                } else if (node.status == Node.SPINNING) {
+                    for (int i = 0; i < SPIN_ITERS; ++i) {
+                        if (prev.next == null) break o;
+                        if (head == prev) continue o;      // we're first, go acquire
+                        Thread.onSpinWait();
+                    }
 
-             }
-        }finally {
-            if (wasInterrupted) Thread.currentThread().interrupt(); //reset interrupt flag
+                    node.status = Node.PARKING;            // budget spent, escalate
+                } else {
+                    LockSupport.park(this);                // status == PARKING was published,
+                    if (!wasInterrupted && Thread.interrupted()) wasInterrupted = true;
+                    node.clearStatus();                    // loop top rechecked prev.next/head first
+                }
+            }
+        } finally {
+            if (wasInterrupted) Thread.currentThread().interrupt();
         }
-
         return result(node);
+    }
+
+    private boolean shouldSpin(Node<E> node) {
+        long s = node.seq;
+        return s - head.seq <= SPIN_DEPTH;
     }
 
     <R> R result(Node<E> node) {
@@ -209,7 +260,7 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
     public CombinerMetrics metrics() {
         while (!acquire()) Thread.onSpinWait();
         try {
-            return new CombinerMetrics(_total_ops, _passes, _combined, 0);
+            return new CombinerMetrics(_total_ops, _passes, _combined, _passes == 0 ? 0 : (double) _total_ops / _passes);
         }finally {
             release();
         }
@@ -229,6 +280,10 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
 
     Node<E> exchangeTail(Node<E> with) {
         return (Node<E>) TAIL.getAndSet(this, with);
+    }
+
+    boolean casTail(Node<E> from, Node<E> to) {
+        return TAIL.compareAndSet(this, from, to);
     }
 
 

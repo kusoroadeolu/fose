@@ -66,7 +66,7 @@ public class CacheLineBenchmark {
         @Param({"0"})
         public int work;
 
-        @Param({"25"})
+        @Param({"100"})
         public int maxCombingOps;
 
         Data combData;
@@ -174,7 +174,7 @@ public class CacheLineBenchmark {
     }
 
 
-   static final int[] THREAD_SWEEP = {16, 24, 32, 48, 64};
+   static final int[] THREAD_SWEEP = {4, 6, 8, 16, 24, 32, 48, 64};
     public static void main(String[] args) throws Exception {
         int cores = Runtime.getRuntime().availableProcessors();
         for (int t : THREAD_SWEEP) {
