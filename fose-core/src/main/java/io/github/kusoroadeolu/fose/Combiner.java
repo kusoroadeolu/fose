@@ -1,8 +1,9 @@
 package io.github.kusoroadeolu.fose;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.StampedLock;
+import java.util.concurrent.locks.LockSupport;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -45,10 +46,6 @@ public class Combiner<E> extends CombinerCore<E> {
         super(item);
     }
 
-    Combiner(E item, int maxCombiningOperations) {
-        super(item, maxCombiningOperations);
-    }
-
     Combiner(E item, int maxCombiningOperations, boolean exposeMetrics) {
         super(item, maxCombiningOperations, exposeMetrics);
     }
@@ -66,8 +63,7 @@ public class Combiner<E> extends CombinerCore<E> {
      */
     public <R> R apply(Function<? super E, ? extends R> operation) {
         Objects.requireNonNull(operation);
-        StampedLock lock = this.lock;
-        return super.tryCombining(operation, lock);
+        return super.tryCombining(operation);
     }
 
     /**
@@ -82,7 +78,7 @@ public class Combiner<E> extends CombinerCore<E> {
         });
     }
 
-    <R> R doCombine(Object op) {
+    <R> R combine(Object op) {
         Function<? super E, ? extends R> fn = (Function<E, R>) op;
         final E item = this.item;
         R result;
@@ -98,95 +94,70 @@ public class Combiner<E> extends CombinerCore<E> {
         return result;
     }
 
-    <R> R doCombineNode(Node<E> node) {
-        if (node.op == null)  {
-            if (node.err != null) throw new CombiningException(node.err);
-            else return (R) node.result;
-        }
-
-        final E item = this.item;
-        Function<? super E, ? extends R> fn = (Function<E, R>) node.op;
-        try {
-            return fn.apply(item);
-        }catch (Throwable t) {
-            throw new CombiningException(t);
-        } finally {
-            node.op = null;
-            combinePass(node);
-        }
-    }
-
-    <R> boolean doFn(Node<E> node, E e) {
-        if (node.op != null) {
-            var fn = (Function<E, R>) node.op;
-            try {
-                node.result = fn.apply(e);
-            }catch (Throwable t) {
-                node.err = t;
-            }
-
-            node.srDone();
-            return true;
-        }
-
-        return false;
+    <R> R combineEnqueued(Node<E> prev, Node<E> node) {
+        if (getHeadPlain() == prev) combinePass();
+        else release();
+        return result(node);
     }
 
     void combinePass() {
-        Node<E> prev = this.head;
+        Node<E> prev = getHeadPlain();
         Node<E> curr;
         final E item = this.item;
-
+        List<Thread> waiters = null;
         int ops = 0;
-        while (ops < maxOps && (curr = prev.lvNext()) != null) {
-            if (doFn(curr, item)) ++ops;
-            prev.next = null;
-            prev = curr;
-        }
 
-        head = prev;
+        try {
+            while (ops < maxOps && (curr = prev.next) != null) {
+                @SuppressWarnings("unchecked")
+                var fn = (Function<E, Object>) curr.op;
 
-        recordMetrics(ops);
-    }
+                try {
+                    curr.result = fn.apply(item);
+                } catch (Throwable t) {
+                    curr.err = t;
+                }
 
-    void combinePass(Node<E> self) {
-        Node<E> prev = this.head;
-        Node<E> curr;
-        final E item = this.item;
+                prev.next = null;
 
-        int ops = 0;
-        boolean sawSelf = false;
-        boolean gap = false;
+                if (curr.status == Node.PARKING) {
+                    if (waiters == null) waiters = new ArrayList<>((int) (maxOps - ops));
 
-        for (;;) {
-            if (ops >= maxOps) break;
+                    curr.unsetStatus(Node.PARKING);
+                    waiters.add(curr.waiter);
+                }
 
-            if ((curr = prev.lvNext()) == null) {
-                if (!sawSelf) gap = true; //if we didn't see our node, there's a gap in the queue, we'll continue combining from our node
-                break;
+                ops++;
+                prev = curr;
             }
 
-            if (!sawSelf && curr == self) sawSelf = true;
+        }finally {
 
-            if (doFn(curr, item)) ++ops;
+            head = prev;
 
-            prev.next = null;
-            prev = curr;
-        }
+            Node<E> succ = prev.next;
 
-        head = prev;
+            Thread next = (succ != null && succ.status == Node.PARKING) ? succ.waiter : null;
+            //recheck to handle the issue of a missed handoff signal
+            //if the waiter is unavailable after setting head = prev, the handoff signal cannot be lost
 
+            try {
+                recordMetrics(ops);
+            } finally {
+                release();
 
-        //hop to our node, never modifies head, also never unlinks as we traverse, so garbage nodes are still reachable from the head
-        if (gap) {
-            Node<E> start = self;
-            while (ops < maxOps && (curr = start.lvNext()) != null) {
-                if (doFn(curr, item)) ++ops;
-                start = curr;
+                if (waiters != null) {
+                    for (int i = 0; i < waiters.size(); ++i) {
+                        LockSupport.unpark(waiters.get(i));
+                    }
+                }
+
+                if (next != null) {
+                    succ.unsetStatus(Node.PARKING);
+                    LockSupport.unpark(next);
+                }
             }
         }
-
-        recordMetrics(ops);
     }
 
     void recordMetrics(int ops) {

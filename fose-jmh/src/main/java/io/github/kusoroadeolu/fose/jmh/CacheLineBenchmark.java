@@ -66,7 +66,7 @@ public class CacheLineBenchmark {
         @Param({"0"})
         public int work;
 
-        @Param({"25", "100", "175"})
+        @Param({"25"})
         public int maxCombingOps;
 
         Data combData;
@@ -153,28 +153,28 @@ public class CacheLineBenchmark {
         }
     }
 
-    @Benchmark
-    public void baselineAdd(LockState sc) {
-        sc.lock.lock();
-        try {
-            sc.baseData.add();
-        } finally {
-            sc.lock.unlock();
-        }
-        Blackhole.consumeCPU(sc.work);
-    }
-
-
-
 //    @Benchmark
-//    public Object combinedAdd(CombinerState s, CombinerState.SharedCounters sc) {
-//        Object r = s.combiner.apply(ADD);
-//        Blackhole.consumeCPU(s.work);
-//        return r;
+//    public void baselineAdd(LockState sc) {
+//        sc.lock.lock();
+//        try {
+//            sc.baseData.add();
+//        } finally {
+//            sc.lock.unlock();
+//        }
+//        Blackhole.consumeCPU(sc.work);
 //    }
 
 
-   static final int[] THREAD_SWEEP = {4, 6, 8, 16, 24, 32, 48, 64};
+
+    @Benchmark
+    public Object combinedAdd(CombinerState s, CombinerState.SharedCounters sc) {
+        Object r = s.combiner.apply(ADD);
+        Blackhole.consumeCPU(s.work);
+        return r;
+    }
+
+
+   static final int[] THREAD_SWEEP = {16, 24, 32, 48, 64};
     public static void main(String[] args) throws Exception {
         int cores = Runtime.getRuntime().availableProcessors();
         for (int t : THREAD_SWEEP) {

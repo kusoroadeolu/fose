@@ -8,6 +8,7 @@ import java.util.Arrays;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Queue;
+import java.util.concurrent.locks.LockSupport;
 
 class CombinerLincheckTest {
     static class Adder {
@@ -70,6 +71,7 @@ class CombinerLincheckTest {
 
             Runnable task = () -> {
                 Integer value = c.apply(Queue::poll);
+
                 Assertions.assertNotNull(value);
             };
 
