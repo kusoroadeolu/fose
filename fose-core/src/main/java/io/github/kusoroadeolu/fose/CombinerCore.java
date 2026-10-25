@@ -29,6 +29,7 @@ class CombinerPad2<E> extends CombinerWaiterField<E> {
 class CombinerFields<E> extends CombinerPad2<E> {
     volatile Node<E> head;
     final E item;
+    volatile long currSeq;
     //ideally we'd use an int, but to avoid hotspot reordering this with the tail fail due to alignment gaps,
     // we use a long
     //will switch to byte padding later to avoid this
@@ -168,6 +169,7 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
         boolean wasInterrupted = false;
         Node<E> node = null, prev = null;
         Thread w = Thread.currentThread();
+        boolean isVirtual = w.isVirtual();
         try {
             boolean first = false;
 
@@ -189,13 +191,16 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
                     var t = tail;
                     long seq = t.seq;
                     node.seq = seq + 1;
+
                     if (!casTail(t, node)) continue;
 
                     prev = t;
                     prev.next = node;
+
                 } else if (node.status == 0) {
-                    node.status = shouldSpin(node) ? Node.SPINNING : Node.PARKING;
+                    node.status = !isVirtual && shouldSpin(node) ? Node.SPINNING : Node.PARKING;
                 } else if (node.status == Node.SPINNING) {
+
                     for (int i = 0; i < SPIN_ITERS; ++i) {
                         if (prev.next == null) break o;
                         if (head == prev) continue o;      // we're first, go acquire
@@ -203,10 +208,11 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
                     }
 
                     node.status = Node.PARKING;            // budget spent, escalate
+
                 } else {
-                    LockSupport.park(this);                // status == PARKING was published,
+                    LockSupport.park(this);
                     if (!wasInterrupted && Thread.interrupted()) wasInterrupted = true;
-                    node.clearStatus();                    // loop top rechecked prev.next/head first
+                    node.clearStatus();                    // clear status & loop top rechecked prev.next/head first
                 }
             }
         } finally {
@@ -217,7 +223,7 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
 
     private boolean shouldSpin(Node<E> node) {
         long s = node.seq;
-        return s - head.seq <= SPIN_DEPTH;
+        return (s - currSeq()) <= SPIN_DEPTH;
     }
 
     <R> R result(Node<E> node) {
@@ -282,6 +288,14 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
         return (Node<E>) TAIL.getAndSet(this, with);
     }
 
+    long currSeq() {
+        return (long) CURR_SEQ.getOpaque(this);
+    }
+
+    void updateSeq(long seq) {
+        CURR_SEQ.setOpaque(this, seq);
+    }
+
     boolean casTail(Node<E> from, Node<E> to) {
         return TAIL.compareAndSet(this, from, to);
     }
@@ -290,10 +304,12 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
     static final VarHandle TAIL;
     static final VarHandle HEAD;
     static final VarHandle STATE;
+    static final VarHandle CURR_SEQ;
 
     static {
         var lookup = MethodHandles.lookup();
         try {
+            CURR_SEQ = lookup.findVarHandle(CombinerCore.class, "currSeq", long.class);
             HEAD = lookup.findVarHandle(CombinerCore.class, "head", Node.class);
             STATE = lookup.findVarHandle(CombinerCore.class, "state", long.class);
             TAIL = lookup.findVarHandle(CombinerCore.class, "tail", Node.class);

@@ -120,9 +120,10 @@ public class Combiner<E> extends CombinerCore<E> {
 
                 prev.next = null;
 
+                updateSeq(curr.seq); //curr.seq made visible by read of pred.next, a weak write is alright here
+
                 if (curr.status == Node.PARKING) {
                     if (waiters == null) waiters = new ArrayList<>((int) (maxOps - ops));
-
                     curr.unsetStatus(Node.PARKING);
                     waiters.add(curr.waiter);
                 }
@@ -153,7 +154,6 @@ public class Combiner<E> extends CombinerCore<E> {
                 }
 
                 if (next != null) {
-                    succ.unsetStatus(Node.PARKING);
                     LockSupport.unpark(next);
                 }
             }
