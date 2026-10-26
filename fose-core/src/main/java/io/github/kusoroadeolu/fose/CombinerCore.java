@@ -2,7 +2,6 @@ package io.github.kusoroadeolu.fose;
 
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
-import java.util.ArrayList;
 import java.util.concurrent.locks.LockSupport;
 
 class CombinerPad0 {
@@ -29,13 +28,13 @@ class CombinerPad2<E> extends CombinerWaiterField<E> {
 class CombinerFields<E> extends CombinerPad2<E> {
     volatile Node<E> head;
     final E item;
-    volatile long currSeq;
+    long currSeq;
     //ideally we'd use an int, but to avoid hotspot reordering this with the tail fail due to alignment gaps,
     // we use a long
     //will switch to byte padding later to avoid this
+
     final long maxOps; //max operations per combining session
     final boolean exposeMetrics;
-    final ArrayList<Thread> waiters;
 
     //metrics
     long _combined;
@@ -45,7 +44,6 @@ class CombinerFields<E> extends CombinerPad2<E> {
     public CombinerFields(E item, int maxOps, boolean exposeMetrics) {
         this.item = item;
         this.maxOps = maxOps;
-        this.waiters = new ArrayList<>(maxOps);
         this.exposeMetrics = exposeMetrics;
     }
 }
@@ -114,8 +112,9 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
      * */
     static final int DEFAULT_MAX_COMBINING_OPERATIONS = 25;
 
-    static final int SPIN_DEPTH = Runtime.getRuntime().availableProcessors() - 1;
-    static final int SPIN_ITERS = 1024;
+    static final int NCPU = Runtime.getRuntime().availableProcessors();
+    static final int MAX_SPINNING_WAITERS = NCPU / 2;
+    static final int MAX_SPINS = 1024;
 
 
     CombinerCore(E item) {
@@ -128,43 +127,6 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
         head = tail = new Node<>(null);
     }
 
-
-//    <R> R tryCombining(Object op) {
-//        boolean wasInterrupted = false;
-//        Node<E> node = null, prev = null;
-//        Thread w = Thread.currentThread();
-//        try {
-//            boolean first = false;
-//            for (;;) {
-//                if (prev != null && prev.next == null) break;
-//
-//                if (first || prev == null || (first = (prev == head))) {
-//                    if (acquire()) {
-//                        if (first) return combineEnqueued(prev, node);
-//                        else return combine(op);
-//                    }
-//                }
-//
-//                if (node == null) {
-//                    node = new Node<>(op);                 // node.seq defaults to UNKNOWN
-//                } else if (prev == null) {
-//                    node.waiter = w;
-//                    prev = exchangeTail(node);
-//                    prev.next = node;                      // publish
-//                }else if (node.status == 0) {
-//                    node.status = Node.PARKING;
-//                } else {
-//                    LockSupport.park(this);
-//                    if (!wasInterrupted && Thread.interrupted()) wasInterrupted = true;
-//                    node.clearStatus();
-//                }
-//            }
-//        } finally {
-//            if (wasInterrupted) Thread.currentThread().interrupt();
-//        }
-//        return result(node);
-//    }
-
     <R> R tryCombining(Object op) {
         boolean wasInterrupted = false;
         Node<E> node = null, prev = null;
@@ -172,6 +134,8 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
         boolean isVirtual = w.isVirtual();
         try {
             boolean first = false;
+            long seenSeq;
+            long remSpins = MAX_SPINS;
 
             o: for (;;) {
                 if (prev != null && prev.next == null) break;
@@ -198,22 +162,33 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
                     prev.next = node;
 
                 } else if (node.status == 0) {
-                    node.status = !isVirtual && shouldSpin(node) ? Node.SPINNING : Node.PARKING;
-                } else if (node.status == Node.SPINNING) {
+                    seenSeq = currSeq();
 
-                    for (int i = 0; i < SPIN_ITERS; ++i) {
+                    node.status = !isVirtual && shouldSpin(node, seenSeq) ?
+                            Node.SPINNING : Node.PARKING;
+
+                    if (remSpins <= 0) remSpins = Byte.MAX_VALUE;
+
+                } else if (node.status == Node.SPINNING) {
+                    for (long spins = 0; spins < remSpins; ++spins) {
                         if (prev.next == null) break o;
-                        if (head == prev) continue o;      // we're first, go acquire
+
+                        if (head == prev) {
+                            remSpins -= spins;
+                            continue o;      // we're first, try acquire
+                        }
+
                         Thread.onSpinWait();
                     }
 
-                    node.status = Node.PARKING;            // budget spent, escalate
+                    node.status = Node.PARKING;            // budget spent, park
 
                 } else {
                     LockSupport.park(this);
                     if (!wasInterrupted && Thread.interrupted()) wasInterrupted = true;
                     node.clearStatus();                    // clear status & loop top rechecked prev.next/head first
                 }
+
             }
         } finally {
             if (wasInterrupted) Thread.currentThread().interrupt();
@@ -221,9 +196,9 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
         return result(node);
     }
 
-    private boolean shouldSpin(Node<E> node) {
+    private boolean shouldSpin(Node<E> node, long seenSeq) {
         long s = node.seq;
-        return (s - currSeq()) <= SPIN_DEPTH;
+        return (s - seenSeq) <= MAX_SPINNING_WAITERS;
     }
 
     <R> R result(Node<E> node) {

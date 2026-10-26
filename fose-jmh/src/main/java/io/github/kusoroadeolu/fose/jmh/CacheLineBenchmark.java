@@ -10,6 +10,7 @@ import org.openjdk.jmh.runner.options.OptionsBuilder;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.StampedLock;
 import java.util.function.Function;
 
@@ -66,7 +67,7 @@ public class CacheLineBenchmark {
         @Param({"0"})
         public int work;
 
-        @Param({"100"})
+        @Param({"25"})
         public int maxCombingOps;
 
         Data combData;
@@ -144,7 +145,7 @@ public class CacheLineBenchmark {
         @Setup(Level.Trial)
         public void setup() {
             baseData = new Data(lines);
-            lock = new StampedLock().asWriteLock();
+            lock = new ReentrantLock();
         }
 
         @TearDown(Level.Trial)
@@ -153,16 +154,16 @@ public class CacheLineBenchmark {
         }
     }
 
-//    @Benchmark
-//    public void baselineAdd(LockState sc) {
-//        sc.lock.lock();
-//        try {
-//            sc.baseData.add();
-//        } finally {
-//            sc.lock.unlock();
-//        }
-//        Blackhole.consumeCPU(sc.work);
-//    }
+    @Benchmark
+    public void baselineAdd(LockState sc) {
+        sc.lock.lock();
+        try {
+            sc.baseData.add();
+        } finally {
+            sc.lock.unlock();
+        }
+        Blackhole.consumeCPU(sc.work);
+    }
 
 
 

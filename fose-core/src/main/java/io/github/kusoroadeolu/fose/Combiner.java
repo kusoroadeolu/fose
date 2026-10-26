@@ -104,8 +104,9 @@ public class Combiner<E> extends CombinerCore<E> {
         Node<E> prev = getHeadPlain();
         Node<E> curr;
         final E item = this.item;
-        List<Thread> waiters = null;
+        Thread[] waiters = null;
         int ops = 0;
+        int waiting = 0;
 
         try {
             while (ops < maxOps && (curr = prev.next) != null) {
@@ -118,14 +119,14 @@ public class Combiner<E> extends CombinerCore<E> {
                     curr.err = t;
                 }
 
-                prev.next = null;
+                prev.next = null; //make visible
 
-                updateSeq(curr.seq); //curr.seq made visible by read of pred.next, a weak write is alright here
+                updateSeq(curr.seq); //curr.seq made visible by read of pred.next, a weak write is also alright here
 
                 if (curr.status == Node.PARKING) {
-                    if (waiters == null) waiters = new ArrayList<>((int) (maxOps - ops));
+                    if (waiters == null) waiters = new Thread[(int) maxOps];
                     curr.unsetStatus(Node.PARKING);
-                    waiters.add(curr.waiter);
+                    waiters[waiting++] = curr.waiter;
                 }
 
                 ops++;
@@ -148,8 +149,8 @@ public class Combiner<E> extends CombinerCore<E> {
                 release();
 
                 if (waiters != null) {
-                    for (int i = 0; i < waiters.size(); ++i) {
-                        LockSupport.unpark(waiters.get(i));
+                    for (int i = 0; i < waiting; ++i) {
+                        LockSupport.unpark(waiters[i]);
                     }
                 }
 
