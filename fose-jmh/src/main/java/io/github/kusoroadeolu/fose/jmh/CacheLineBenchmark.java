@@ -64,11 +64,11 @@ public class CacheLineBenchmark {
         @Param({"5"})
         public int lines;
 
-        @Param({"0"})
+        @Param({"1000"})
         public int work;
 
         @Param({"25"})
-        public int maxCombingOps;
+        public int maxCombOps;
 
         Data combData;
         Combiner<Data> combiner;
@@ -83,7 +83,7 @@ public class CacheLineBenchmark {
         @Setup(Level.Trial)
         public void setup() {
             combData = new Data(lines);
-            combiner = Combiner.builder(combData).exposeMetrics().maxCombiningOperations(maxCombingOps).build();
+            combiner = Combiner.builder(combData).exposeMetrics().maxCombiningOperations(maxCombOps).build();
         }
 
         @TearDown(Level.Trial)
@@ -134,7 +134,7 @@ public class CacheLineBenchmark {
         @Param({"5"})
         public int lines;
 
-        @Param({"0"})
+        @Param({"1000"})
         public int work;
 
 
@@ -175,7 +175,7 @@ public class CacheLineBenchmark {
     }
 
 
-   static final int[] THREAD_SWEEP = {4, 6, 8, 16, 24, 32, 48, 64};
+   static final int[] THREAD_SWEEP = {16, 24, 32, 48, 64};
     public static void main(String[] args) throws Exception {
         int cores = Runtime.getRuntime().availableProcessors();
         for (int t : THREAD_SWEEP) {

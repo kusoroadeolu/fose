@@ -95,7 +95,8 @@ public class Combiner<E> extends CombinerCore<E> {
     }
 
     <R> R combineEnqueued(Node<E> prev, Node<E> node) {
-        if (getHeadPlain() == prev) combinePass();
+        if (getHeadPlain() == prev)
+            combinePass();
         else release();
         return result(node);
     }
@@ -124,9 +125,11 @@ public class Combiner<E> extends CombinerCore<E> {
                 updateSeq(curr.seq); //curr.seq made visible by read of pred.next, a weak write is also alright here
 
                 if (curr.status == Node.PARKING) {
-                    if (waiters == null) waiters = new Thread[(int) maxOps];
-                    curr.unsetStatus(Node.PARKING);
-                    waiters[waiting++] = curr.waiter;
+                   if (waiters == null)
+                       waiters = new Thread[(int) maxOps];
+
+                   curr.unsetStatus(Node.PARKING);
+                   waiters[waiting++] = curr.waiter;
                 }
 
                 ops++;
@@ -148,15 +151,14 @@ public class Combiner<E> extends CombinerCore<E> {
             } finally {
                 release();
 
+                if (next != null) LockSupport.unpark(next);
+
                 if (waiters != null) {
                     for (int i = 0; i < waiting; ++i) {
                         LockSupport.unpark(waiters[i]);
                     }
                 }
 
-                if (next != null) {
-                    LockSupport.unpark(next);
-                }
             }
         }
     }

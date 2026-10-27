@@ -2,6 +2,7 @@ package io.github.kusoroadeolu.fose;
 
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.locks.LockSupport;
 
 class CombinerPad0 {
@@ -74,24 +75,21 @@ class CombinerPad3<E> extends CombinerFields<E> {
  * consumer lambda), and then periodically checking whether the operation has
  * been applied or the lock has become available.
  *
- * The publication queue is an implementation of Dmitry Vyukov's unbounded
- * MPSC queue. An enqueue atomically exchanges (xchg) the queue's tail with the
+ * The publication queue is an unbounded MPSC queue.
+ * An enqueue atomically tries to cas the queue's tail with the
  * thread's node and then links the previous tail's next pointer to that node.
- * This makes enqueues wait-free and avoids CAS retry storms, which can greatly
- * reduce performance under high contention. There is a brief window between
- * swapping the tail and linking the previous tail's next pointer in which the
- * queue observed by a traversing lock holder may be inconsistent. Hence, a
+ *. There is a brief window between swapping the tail and linking
+ * the previous tail's next pointer in which the queue observed
+ * by a traversing lock holder may be inconsistent. Hence, a
  * combining pass could be exited once the lock holder encounters this
  * inconsistency.
  *
- * A lock holder applies its own op, then drains up to maxOps nodes, bounding
+ * A lock holder applies its own op, then applies nodes in fifo, bounding
  * the time it spends serving others.
  *
- * Waiters use an escalating backoff strategy, from spin waiting to periodic
- * sleeping. They track the number of times they have missed acquiring the lock
- * to make a local guess at how contended the lock is, or how deep their node
- * is in the queue, and increase the time spent waiting on their
- * node rather than continuously retrying the lock.
+ *
+ * Waiters near the head of the queue use an escalating backoff strategy,
+ * from spin waiting to parking, waiters further from the head park immediately.
  *
  * Interrupts are deferred while waiting (parkNanos would otherwise return
  * immediately, and a node cannot be abandoned once published) and restored on
@@ -113,7 +111,7 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
     static final int DEFAULT_MAX_COMBINING_OPERATIONS = 25;
 
     static final int NCPU = Runtime.getRuntime().availableProcessors();
-    static final int MAX_SPINNING_WAITERS = NCPU / 2;
+    static final int MAX_SPINNING_WAITERS = (NCPU - 1) / 2;
     static final int MAX_SPINS = 1024;
 
 
@@ -127,11 +125,13 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
         head = tail = new Node<>(null);
     }
 
+
     <R> R tryCombining(Object op) {
         boolean wasInterrupted = false;
         Node<E> node = null, prev = null;
         Thread w = Thread.currentThread();
         boolean isVirtual = w.isVirtual();
+
         try {
             boolean first = false;
             long seenSeq;
@@ -151,12 +151,15 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
                     node = new Node<>(op);
                 } else if (prev == null) {
 
-                    node.waiter = w;
                     var t = tail;
                     long seq = t.seq;
                     node.seq = seq + 1;
+                    node.waiter = w;
 
-                    if (!casTail(t, node)) continue;
+                    if (!casTail(t, node)) {
+                        node.waiter = null;
+                        continue;
+                    }
 
                     prev = t;
                     prev.next = node;
@@ -272,7 +275,7 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
     }
 
     boolean casTail(Node<E> from, Node<E> to) {
-        return TAIL.compareAndSet(this, from, to);
+        return tail == from && TAIL.compareAndSet(this, from, to);
     }
 
 

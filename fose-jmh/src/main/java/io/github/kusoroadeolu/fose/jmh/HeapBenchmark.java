@@ -3,6 +3,7 @@ package io.github.kusoroadeolu.fose.jmh;
 import io.github.kusoroadeolu.fose.Combiner;
 import org.openjdk.jmh.annotations.*;
 import org.openjdk.jmh.infra.Blackhole;
+import org.openjdk.jmh.profile.JavaFlightRecorderProfiler;
 import org.openjdk.jmh.results.format.ResultFormatType;
 import org.openjdk.jmh.runner.Runner;
 import org.openjdk.jmh.runner.options.OptionsBuilder;
@@ -74,14 +75,14 @@ public class HeapBenchmark {
 
     @State(Scope.Benchmark)
     public static class CombinerState {
-        @Param({"65536"})   // 512 KB of longs, bigger than my L1 cache
+        @Param({"65536"})
         public int size;
 
-        @Param({"0"})
+        @Param({"500"})
         public int work;
 
         @Param({"25"})
-        public int maxCombingOps;
+        public int maxCombOps;
 
         HeapData combData;
         Combiner<HeapData> combiner;
@@ -90,7 +91,7 @@ public class HeapBenchmark {
         @Setup(Level.Trial)
         public void setup() {
             combData = new HeapData(size);
-            combiner = Combiner.builder(combData).exposeMetrics().maxCombiningOperations(maxCombingOps).build();
+            combiner = Combiner.builder(combData).exposeMetrics().maxCombiningOperations(maxCombOps).build();
         }
 
         AtomicBoolean claimed;
@@ -149,7 +150,7 @@ public class HeapBenchmark {
         @Param({"65536"})   // 512 KB of longs, bigger than my L1 cache
         public int size;
 
-        @Param({"0"})
+        @Param({"500"})
         public int work;
 
         HeapData baseData;
@@ -169,18 +170,18 @@ public class HeapBenchmark {
 
 
 
-    @Benchmark
-    public Object baselineHold(LockState s) {
-        Object r;
-        s.lock.lock();
-        try {
-            r = s.baseData.hold();
-        } finally {
-            s.lock.unlock();
-        }
-        Blackhole.consumeCPU(s.work);
-        return r;
-    }
+//    @Benchmark
+//    public Object baselineHold(LockState s) {
+//        Object r;
+//        s.lock.lock();
+//        try {
+//            r = s.baseData.hold();
+//        } finally {
+//            s.lock.unlock();
+//        }
+//        Blackhole.consumeCPU(s.work);
+//        return r;
+//    }
 
     @Benchmark
     public Object combinedHold(CombinerState s, CombinerState.SharedCounters sc) {
@@ -189,7 +190,7 @@ public class HeapBenchmark {
         return r;
     }
 
-    static final int[] THREAD_SWEEP = {2, 3, 4, 6, 8, 16, 24, 32, 48, 64};
+    static final int[] THREAD_SWEEP = {16, 24, 32, 48, 64};
     public static void main(String[] args) throws Exception {
         int cores = Runtime.getRuntime().availableProcessors();
         for (int t : THREAD_SWEEP) {
@@ -201,7 +202,7 @@ public class HeapBenchmark {
                             .threads(t)
                             .resultFormat(ResultFormatType.JSON)
                             .result(resultFile)
-              //              .addProfiler(JavaFlightRecorderProfiler.class, "dir=C:\\jfr-fc")
+                         //   .addProfiler(JavaFlightRecorderProfiler.class, "dir=C:\\jfr-fc")
                             .build())
                     .run();
         }
