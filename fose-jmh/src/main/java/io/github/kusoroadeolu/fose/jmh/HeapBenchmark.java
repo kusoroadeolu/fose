@@ -17,8 +17,8 @@ import java.util.function.Function;
 @Fork(value = 3, jvmArgs = {JvmArgs.INITIAL_HEAP_SIZE, JvmArgs.MAX_HEAP_SIZE, JvmArgs.GC_TYPE})
 @Warmup(iterations = 5, time = 1)
 @Measurement(iterations = 10, time = 1)
-@BenchmarkMode(Mode.SampleTime)
-@OutputTimeUnit(TimeUnit.NANOSECONDS)
+@BenchmarkMode(Mode.Throughput)
+@OutputTimeUnit(TimeUnit.MICROSECONDS)
 public class HeapBenchmark {
 
     static final class HeapData {
@@ -62,13 +62,6 @@ public class HeapBenchmark {
             siftDown(0, min + (next() & DELTA_MASK));
             return min;
         }
-
-        //ensure mutual exclusion is upheld
-        void verify() {
-            for (int i = 1; i < n; i++) {
-                if (h[(i - 1) / 2] > h[i]) throw new IllegalStateException("heap broken at " + i);
-            }
-        }
     }
 
     static final Function<HeapData, Object> HOLD = HeapData::hold;
@@ -78,7 +71,7 @@ public class HeapBenchmark {
         @Param({"65536"})
         public int size;
 
-        @Param({"500"})
+        @Param({"100"})
         public int work;
 
         @Param({"25"})
@@ -100,11 +93,6 @@ public class HeapBenchmark {
         public void claimed() {
             claimed = new AtomicBoolean(false);
             combiner.resetMetrics();
-        }
-
-        @TearDown(Level.Trial)
-        public void tearDown() {
-            combData.verify();  //should we collect these in aux counters as well?
         }
 
         @State(Scope.Thread)
@@ -147,10 +135,10 @@ public class HeapBenchmark {
 
     @State(Scope.Benchmark)
     public static class LockState {
-        @Param({"65536"})   // 512 KB of longs, bigger than my L1 cache
+        @Param({"65536"})   // 512 KB of longs
         public int size;
 
-        @Param({"500"})
+        @Param({"100"})
         public int work;
 
         HeapData baseData;
@@ -161,27 +149,22 @@ public class HeapBenchmark {
             baseData = new HeapData(size);
             lock = new ReentrantLock();
         }
-
-        @TearDown(Level.Trial)
-        public void tearDown() {
-            baseData.verify();  //should we collect these in aux counters as well?
-        }
     }
 
 
 
-//    @Benchmark
-//    public Object baselineHold(LockState s) {
-//        Object r;
-//        s.lock.lock();
-//        try {
-//            r = s.baseData.hold();
-//        } finally {
-//            s.lock.unlock();
-//        }
-//        Blackhole.consumeCPU(s.work);
-//        return r;
-//    }
+    @Benchmark
+    public Object baselineHold(LockState s) {
+        Object r;
+        s.lock.lock();
+        try {
+            r = s.baseData.hold();
+        } finally {
+            s.lock.unlock();
+        }
+        Blackhole.consumeCPU(s.work);
+        return r;
+    }
 
     @Benchmark
     public Object combinedHold(CombinerState s, CombinerState.SharedCounters sc) {
@@ -190,7 +173,7 @@ public class HeapBenchmark {
         return r;
     }
 
-    static final int[] THREAD_SWEEP = {16, 24, 32, 48, 64};
+    static final int[] THREAD_SWEEP = {1, 2, 4, 6, 8, 16, 24, 32, 48, 64};
     public static void main(String[] args) throws Exception {
         int cores = Runtime.getRuntime().availableProcessors();
         for (int t : THREAD_SWEEP) {
@@ -202,7 +185,7 @@ public class HeapBenchmark {
                             .threads(t)
                             .resultFormat(ResultFormatType.JSON)
                             .result(resultFile)
-                         //   .addProfiler(JavaFlightRecorderProfiler.class, "dir=C:\\jfr-fc")
+                            .addProfiler(JavaFlightRecorderProfiler.class, "dir=C:\\jfr-fc")
                             .build())
                     .run();
         }

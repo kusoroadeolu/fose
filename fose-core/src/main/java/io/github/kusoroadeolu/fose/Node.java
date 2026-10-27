@@ -16,7 +16,7 @@ class Node<E> {
     static final int SPINNING = 2;
 
 
-    //Here, we'll do something quite similar to the waiting scheme in aqs
+    //Here, we'll do something quite similar to the waiting scheme in aqs to support unbounded parks
 
     /*
     * Enqueue node, spin briefly (based on thread count, otherwise if oversubscribed, we try to park)

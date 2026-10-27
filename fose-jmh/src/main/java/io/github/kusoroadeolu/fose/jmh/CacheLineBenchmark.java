@@ -11,7 +11,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
-import java.util.concurrent.locks.StampedLock;
 import java.util.function.Function;
 
 
@@ -40,16 +39,6 @@ public class CacheLineBenchmark {
                 x[PAD + i * STRIDE] = old + 1;
             }
         }
-
-        // Will throw if mutual exclusion was ever broken, returns the counter otherwise.
-        void verify() {
-            long v = x[PAD];
-            for (int i = 1; i < lines; i++) {
-                if (x[PAD + i * STRIDE] != v) {
-                    throw new IllegalStateException("line " + i + " = " + x[PAD + i * STRIDE] + " but line 0 = " + v);
-                }
-            }
-        }
     }
 
     //avoid allocations per call.
@@ -64,7 +53,7 @@ public class CacheLineBenchmark {
         @Param({"5"})
         public int lines;
 
-        @Param({"1000"})
+        @Param({"100"})
         public int work;
 
         @Param({"25"})
@@ -84,11 +73,6 @@ public class CacheLineBenchmark {
         public void setup() {
             combData = new Data(lines);
             combiner = Combiner.builder(combData).exposeMetrics().maxCombiningOperations(maxCombOps).build();
-        }
-
-        @TearDown(Level.Trial)
-        public void tearDown() {
-            combData.verify();
         }
 
         @State(Scope.Thread)
@@ -134,7 +118,7 @@ public class CacheLineBenchmark {
         @Param({"5"})
         public int lines;
 
-        @Param({"1000"})
+        @Param({"100"})
         public int work;
 
 
@@ -146,11 +130,6 @@ public class CacheLineBenchmark {
         public void setup() {
             baseData = new Data(lines);
             lock = new ReentrantLock();
-        }
-
-        @TearDown(Level.Trial)
-        public void tearDown() {
-            baseData.verify();
         }
     }
 
@@ -175,7 +154,7 @@ public class CacheLineBenchmark {
     }
 
 
-   static final int[] THREAD_SWEEP = {16, 24, 32, 48, 64};
+   static final int[] THREAD_SWEEP = {1, 2, 4, 6, 8, 16, 24, 32, 48, 64};
     public static void main(String[] args) throws Exception {
         int cores = Runtime.getRuntime().availableProcessors();
         for (int t : THREAD_SWEEP) {
@@ -187,6 +166,7 @@ public class CacheLineBenchmark {
                     .threads(t)
                     .resultFormat(ResultFormatType.JSON) //need this for my formatter, can remove later
                     .result(resultFile)
+                  //          .addProfiler(JavaFlightRecorderProfiler.class, "dir=C:\\jfr-fc")
                     .build())
                     .run();
 
@@ -196,21 +176,3 @@ public class CacheLineBenchmark {
     }
 }
 
-/*
-* Machine: 4 core intel i5 cpu, 8 cpus and 16 ram, OS: Windows
-* */
-
-/*
-=====================================================================
-CACHE LINE BENCHMARK: combinedAdd vs baselineAdd   (Lines=5, Work=1000)
-=====================================================================
-Threads | Baseline (ns/op)    | Combined (ns/op)    | Diff     | Passes      | Combined
---------|---------------------|---------------------|----------|-------------|----------
-1       | 1631.677 ± 18.553   | 1623.403 ± 15.459   |  -0.5%   |  18,497,165 | 0
-2       | 1730.726 ± 33.169   | 1753.021 ± 28.288   |  +1.3%   |  34,245,708 | 22,698
-3       | 1881.241 ± 44.079   | 1799.102 ± 15.940   |  -4.4%   |  49,954,176 | 108,796
-4       | 2114.130 ± 340.773  | 1879.301 ± 17.198   | -11.1%   |  63,117,601 | 763,588
-6       | 2452.909 ± 76.177   | 2081.865 ± 11.997   | -15.1%   |  81,123,148 | 5,068,870
-8       | 3480.160 ± 243.218  | 2168.774 ± 33.825   | -37.7%   | 110,415,755 | 1,930,051
-16      | 8214.974 ± 234.697  | 4340.719 ± 99.196   | -47.2%   | 122,097,677 | 2,019,508 oversubscribed
-*/

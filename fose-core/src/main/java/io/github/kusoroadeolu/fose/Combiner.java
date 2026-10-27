@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.locks.LockSupport;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -63,6 +64,8 @@ public class Combiner<E> extends CombinerCore<E> {
      */
     public <R> R apply(Function<? super E, ? extends R> operation) {
         Objects.requireNonNull(operation);
+
+        if (acquire()) combine(operation);
         return super.tryCombining(operation);
     }
 
