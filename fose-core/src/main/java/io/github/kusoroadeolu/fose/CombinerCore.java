@@ -2,7 +2,6 @@ package io.github.kusoroadeolu.fose;
 
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.locks.LockSupport;
 
 class CombinerPad0 {
@@ -112,7 +111,7 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
 
     static final int NCPU = Runtime.getRuntime().availableProcessors();
     static final int MAX_SPINNING_WAITERS = NCPU - 1;
-    static final int MAX_SPINS = 1024;
+    static final int MAX_SPINS = 512;
 
 
     CombinerCore(E item) {
@@ -129,8 +128,7 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
     <R> R tryCombining(Object op) {
         boolean wasInterrupted = false;
         Node<E> node = null, prev = null;
-        Thread w = Thread.currentThread();
-        boolean isVirtual = w.isVirtual();
+        Thread w = null;
 
         try {
             boolean first = false;
@@ -150,11 +148,10 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
                 if (node == null) {
                     node = new Node<>(op);
                 } else if (prev == null) {
-
                     var t = tail;
                     long seq = t.seq;
                     node.seq = seq + 1;
-                    node.waiter = w;
+                    node.waiter = w = Thread.currentThread();
 
                     if (!casTail(t, node)) {
                         node.waiter = null;
@@ -168,7 +165,7 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
                     int s;
 
                     seenSeq = currSeq();
-                    node.status = s = !isVirtual && shouldSpin(node, seenSeq) ?
+                    node.status = s = !w.isVirtual() && shouldSpin(node, seenSeq) ?
                             Node.SPINNING : Node.PARKING;
 
                     if (s == Node.SPINNING && remSpins <= 0) remSpins = Byte.MAX_VALUE; //try to spin briefly if we've exhausted
@@ -219,6 +216,7 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
     private void cleanNode(Node<E> node) {
         node.err = null;
         node.op = null;
+        node.waiter = null;
         node.result = null;
     }
 
@@ -259,11 +257,6 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
         }finally {
             release();
         }
-    }
-
-
-    Node<E> exchangeTail(Node<E> with) {
-        return (Node<E>) TAIL.getAndSet(this, with);
     }
 
     long currSeq() {

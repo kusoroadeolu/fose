@@ -108,7 +108,7 @@ public class Combiner<E> extends CombinerCore<E> {
         Node<E> prev = getHeadPlain();
         Node<E> curr;
         final E item = this.item;
-        Thread[] waiters = null;
+        Node<E>[] waiters = null;
         int ops = 0;
         int waiting = 0;
 
@@ -129,10 +129,9 @@ public class Combiner<E> extends CombinerCore<E> {
 
                 if (curr.status == Node.PARKING) {
                    if (waiters == null)
-                       waiters = new Thread[(int) maxOps];
+                       waiters = new Node[(int) maxOps];
 
-                   curr.unsetStatus(Node.PARKING);
-                   waiters[waiting++] = curr.waiter;
+                   waiters[waiting++] = curr;
                 }
 
                 ops++;
@@ -158,7 +157,8 @@ public class Combiner<E> extends CombinerCore<E> {
 
                 if (waiters != null) {
                     for (int i = 0; i < waiting; ++i) {
-                        LockSupport.unpark(waiters[i]);
+                        Node<E> w = waiters[i];
+                        if (w.status == Node.PARKING) LockSupport.unpark(w.waiter);
                     }
                 }
 

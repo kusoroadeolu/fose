@@ -10,7 +10,7 @@ public class BenchmarkRunner {
             return;
         }
 
-        //HeapBenchmark.main(args);
-        CacheLineBenchmark.main(args);
+        HeapBenchmark.main(args);
+        //CacheLineBenchmark.main(args);
     }
 }
