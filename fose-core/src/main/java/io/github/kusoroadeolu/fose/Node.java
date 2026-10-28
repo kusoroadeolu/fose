@@ -46,13 +46,11 @@ class Node<E> {
 
 
     static final VarHandle STATUS;
-    static final VarHandle NEXT;
 
     static {
         var lookup = MethodHandles.lookup();
         try {
             STATUS = lookup.findVarHandle(Node.class, "status", int.class);
-            NEXT = lookup.findVarHandle(Node.class, "next", Node.class);
         }catch (NoSuchFieldException | IllegalAccessException e) {
             throw new RuntimeException(e);
         }

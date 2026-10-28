@@ -14,7 +14,7 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
 
-@Fork(value = 3, jvmArgs = {JvmArgs.INITIAL_HEAP_SIZE, JvmArgs.MAX_HEAP_SIZE, JvmArgs.GC_TYPE})
+@Fork(value = 3, jvmArgs = {Args.INITIAL_HEAP_SIZE, Args.MAX_HEAP_SIZE, Args.GC_TYPE})
 @Warmup(iterations = 5, time = 1)
 @Measurement(iterations = 10, time = 1)
 @BenchmarkMode(Mode.SampleTime)
@@ -153,18 +153,18 @@ public class HeapBenchmark {
 
 
 
-//    @Benchmark
-//    public Object baselineHold(LockState s) {
-//        Object r;
-//        s.lock.lock();
-//        try {
-//            r = s.baseData.hold();
-//        } finally {
-//            s.lock.unlock();
-//        }
-//        Blackhole.consumeCPU(s.work);
-//        return r;
-//    }
+    @Benchmark
+    public Object baselineHold(LockState s) {
+        Object r;
+        s.lock.lock();
+        try {
+            r = s.baseData.hold();
+        } finally {
+            s.lock.unlock();
+        }
+        Blackhole.consumeCPU(s.work);
+        return r;
+    }
 
     @Benchmark
     public Object combinedHold(CombinerState s, CombinerState.SharedCounters sc) {
@@ -173,10 +173,9 @@ public class HeapBenchmark {
         return r;
     }
 
-    static final int[] THREAD_SWEEP = {8, 24, 32, 48, 64};
     public static void main(String[] args) throws Exception {
         int cores = Runtime.getRuntime().availableProcessors();
-        for (int t : THREAD_SWEEP) {
+        for (int t : Args.THREAD_SWEEP) {
             if (t > cores * 2) break;
             String resultFile = "jmh-threads-" + t + ".json";
             new Runner(

@@ -65,7 +65,7 @@ public class Combiner<E> extends CombinerCore<E> {
     public <R> R apply(Function<? super E, ? extends R> operation) {
         Objects.requireNonNull(operation);
 
-        if (acquire()) combine(operation);
+        if (acquire()) return combine(operation);
         return super.tryCombining(operation);
     }
 
@@ -100,7 +100,9 @@ public class Combiner<E> extends CombinerCore<E> {
     <R> R combineEnqueued(Node<E> prev, Node<E> node) {
         if (getHeadPlain() == prev)
             combinePass();
-        else release();
+        else
+            release();
+
         return result(node);
     }
 
@@ -139,26 +141,26 @@ public class Combiner<E> extends CombinerCore<E> {
             }
 
         }finally {
-
             head = prev;
-
-            Node<E> succ = prev.next;
-
-            Thread next = (succ != null && succ.status == Node.PARKING) ? succ.waiter : null;
-            //recheck to handle the issue of a missed handoff signal
-            //if the waiter is unavailable after setting head = prev, the handoff signal cannot be lost
 
             try {
                 recordMetrics(ops);
             } finally {
                 release();
 
+                //recheck after release to handle the issue of a missed handoff signal
+                //if the waiter is unavailable after setting head = prev, the handoff signal cannot be lost
+                Node<E> succ = prev.next;
+                Thread next = (succ != null && succ.status == Node.PARKING) ? succ.waiter : null;
                 if (next != null) LockSupport.unpark(next);
 
                 if (waiters != null) {
                     for (int i = 0; i < waiting; ++i) {
                         Node<E> w = waiters[i];
-                        if (w.status == Node.PARKING) LockSupport.unpark(w.waiter);
+                        if (w.status == Node.PARKING) {
+                            w.unsetStatus(Node.PARKING);
+                            LockSupport.unpark(w.waiter);
+                        }
                     }
                 }
 

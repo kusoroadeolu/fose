@@ -173,6 +173,7 @@ abstract class CombinerCore<E> extends CombinerPad3<E> {
 
                 } else if (node.status == Node.SPINNING) {
                     for (long spins = 0; spins < remSpins; ++spins, --remSpins) {
+
                         if (prev.next == null) break o;
 
                         if (head == prev) continue o;      // we're first, try acquire
