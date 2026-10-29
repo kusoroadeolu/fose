@@ -6,6 +6,8 @@ import java.lang.invoke.VarHandle;
 import java.util.Objects;
 import java.util.concurrent.locks.AbstractOwnableSynchronizer;
 import java.util.concurrent.locks.LockSupport;
+import java.util.function.BiConsumer;
+import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -92,7 +94,7 @@ class CombinerPad4<E> extends CombinerSequenceField<E> {
  * <pre> {@code
  *
  *  class ThreadSafePriorityQueue<E> {
- *      private final Combiner combiner = Combiner.builder(new PriorityQueue<E>()).build();
+ *      private final Combiner<PriorityQueue<E>> combiner = new Combiner<>(new PriorityQueue<>());
  *
  *      public void push(E e) {
  *          combiner.accept(queue -> queue.offer(e));
@@ -160,7 +162,7 @@ public class Combiner<E> extends CombinerPad4<E> {
     /**
      * Default maximum number of operations a combiner can serve in one pass
      * */
-    static final int DEFAULT_MAX_COMBINING_OPERATIONS = 25;
+    static final int MAX_OPERATIONS_PER_PASS = 25;
 
     /**
      * Number of available cpus
@@ -172,19 +174,31 @@ public class Combiner<E> extends CombinerPad4<E> {
      * */
     static final int MAX_SPINNING_WAITERS = (int) (NCPU * 0.6);
 
-
+    /**
+     * Initial max number of spins a spinning waiter can exhaust before parking
+     * */
     static final int SPINS = 1 << 10;
 
-    static final int UNPARK_SPINS = 1 << 7;
+    static final int WAKEUP_SPINS = 1 << 7;
 
-    Combiner(E item) {
-        this(item, DEFAULT_MAX_COMBINING_OPERATIONS, false);
+    static final int FN = 1, CONSUMER = 2, BI_FN = 3, BI_CONSUMER = 4;
+
+
+    public Combiner(E item) {
+        this(item, MAX_OPERATIONS_PER_PASS, false);
+    }
+
+    public Combiner(E item, int maxOperationsPerPass) {
+        this(item, maxOperationsPerPass, false);
     }
 
     Combiner(E item, int maxCombiningOperations, boolean exposeMetrics) {
         super(item, maxCombiningOperations, exposeMetrics);
-        head = tail = new Node<>(null);
+        head = tail = new Node<>(-1, null, null);
     }
+
+
+    // Public methods
 
     /**
      * Applies the given operation to the shared object while holding exclusive
@@ -198,38 +212,82 @@ public class Combiner<E> extends CombinerPad4<E> {
      * @throws NullPointerException if operation is null
      */
     public <R> R apply(Function<? super E, ? extends R> operation) {
-        Objects.requireNonNull(operation);
-
-        if (acquire()) return combine(operation);
-        return tryCombining(operation);
+        return submit(FN, operation, null);
     }
 
     /**
-     * Like {@link #apply(Function)} for operations with no result.
+     * Similar to {@link #apply(Function)} for operations with no result.
      * Same threading and exception behavior.
      */
     public void accept(Consumer<? super E> operation) {
-        Objects.requireNonNull(operation);
-        apply(e -> {
-            operation.accept(e);
-            return null;
-        });
+        submit(CONSUMER, operation, null);
     }
 
-    private  <R> R combine(Object op) {
-        Function<? super E, ? extends R> fn = (Function<E, R>) op;
+    /**
+     * Applies the given operation to the shared object and the given argument
+     * while holding exclusive access, either on the calling thread or, under
+     * contention, on another thread, and returns its result.
+     *
+     * @param <A> the argument type
+     * @param <R> the result type
+     * @param arg the second argument passed to the operation
+     * @param operation the operation to apply; may run on a different thread
+     * @return the value returned by the operation
+     * @throws CombiningException if the operation throws; the original
+     *         exception is the cause
+     * @throws NullPointerException if operation is null
+     */
+    public <A, R> R apply(A arg, BiFunction<? super E, ? super A, ? extends R> operation) {
+        return submit(BI_FN, operation, arg);
+    }
+    /**
+     * Similar to {@link #apply(A, BiFunction)} for operations with no result.
+     * Same threading and exception behavior.
+     */
+    public <A> void accept(A arg, BiConsumer<? super E, ? super A> operation) {
+        submit(BI_CONSUMER, operation, arg);
+    }
+
+
+    //Internals & Helpers
+    private <R> R submit(int kind, Object op, Object arg) {
+        Objects.requireNonNull(op);
+        if (acquire()) return combine(kind, op, arg);
+        return tryCombining(kind, op, arg);
+    }
+
+    private  <R> R combine(int kind, Object op, Object arg) {
         final E item = this.item;
-        R result;
+        Object result;
 
         try {
-            result = fn.apply(item);
+            result = runOperation(kind, op, arg, item);
         }catch (Throwable t) {
             throw new CombiningException(t);
         } finally {
             combinePass();
         }
 
-        return result;
+        return (R) result;
+    }
+
+
+    @SuppressWarnings("unchecked")
+    private static <E> Object runOperation(int kind, Object op, Object arg, E item) {
+        return switch (kind) {
+            case FN -> ((Function<E, ?>) op).apply(item);
+            case BI_FN -> ((BiFunction<E, Object, ?>) op).apply(item, arg);
+
+            case CONSUMER -> {
+                ((Consumer<E>) op).accept(item);
+                yield null;
+            }
+
+            default -> {
+                ((BiConsumer<E, Object>) op).accept(item, arg);
+                yield null;
+            }
+        };
     }
 
     //Tries to run its own op, if it is not at the head
@@ -247,6 +305,7 @@ public class Combiner<E> extends CombinerPad4<E> {
         return result(node);
     }
 
+    //Walks
     private void combinePass() {
         Node<E> prev = getHeadPlain();
         Node<E> curr;
@@ -257,18 +316,14 @@ public class Combiner<E> extends CombinerPad4<E> {
 
         try {
             while (ops < maxOps && (curr = prev.next) != null) {
-                @SuppressWarnings("unchecked")
-                var fn = (Function<E, Object>) curr.op;
 
                 try {
-                    curr.result = fn.apply(item);
+                    curr.result = runOperation(curr.kind, curr.op, curr.arg, item);
                 } catch (Throwable t) {
                     curr.err = t;
                 }
 
-                prev.next = null; //make visible
-
-                updateSeq(curr.seq); //curr.seq made visible by read of pred.next, a weak write is also alright here
+                prev.next = null; //make result visible to waiter
 
                 if (curr.status == Node.PARKING) {
                     if (waiters == null)
@@ -276,6 +331,8 @@ public class Combiner<E> extends CombinerPad4<E> {
 
                     waiters[waiting++] = curr;
                 }
+
+                updateSeq(curr.seq); //curr.seq made visible by read of pred.next, a weak write is also alright here
 
                 ops++;
                 prev = curr;
@@ -318,7 +375,7 @@ public class Combiner<E> extends CombinerPad4<E> {
         }
     }
 
-    private  <R> R tryCombining(Object op) {
+    private  <R> R tryCombining(int kind, Object op, Object arg) {
         boolean wasInterrupted = false;
         Node<E> node = null, prev = null;
         Thread w = null;
@@ -336,12 +393,12 @@ public class Combiner<E> extends CombinerPad4<E> {
                 if (first || prev == null || (first = (prev == head))) {
                     if (acquire()) {
                         if (first) return combineEnqueued(prev, node);
-                        else return combine(op);
+                        else return combine(kind, op, arg);
                     }
                 }
 
                 if (node == null) {
-                    node = new Node<>(op);
+                    node = new Node<>(kind, op, arg);
 
                 } else if (prev == null) {
                     var t = tail;
@@ -364,10 +421,10 @@ public class Combiner<E> extends CombinerPad4<E> {
                     node.status = s = !w.isVirtual() && shouldSpin(node, seenSeq) ?
                             Node.SPINNING : Node.PARKING;
 
-                    if (s == Node.SPINNING && remSpins <= 0) remSpins = UNPARK_SPINS;
+                    if (s == Node.SPINNING && remSpins <= 0) remSpins = WAKEUP_SPINS;
                     //try to spin briefly if we've exhausted
                     //our spin budget but are near the head of the queue
-                    //usually, a thread takes this branch after it's been unparked
+                    //usually, a thread takes this branch after it's been unparked but was previously a spinner
 
                 } else if (status == Node.SPINNING) {
 
@@ -423,6 +480,7 @@ public class Combiner<E> extends CombinerPad4<E> {
         node.op = null;
         node.waiter = null;
         node.result = null;
+        node.arg = null;
     }
 
     private boolean acquire() {
@@ -456,7 +514,7 @@ public class Combiner<E> extends CombinerPad4<E> {
     }
 
 
-    //For BENCHMARKS
+    //Stuff for instrumenting benchmarks
     CombinerMetrics metrics() {
         while (!acquire()) Thread.onSpinWait();
         var h = getHeadPlain();
@@ -478,46 +536,6 @@ public class Combiner<E> extends CombinerPad4<E> {
         }finally {
             release();
             notifyNextWaiter(h);
-        }
-    }
-
-    /**
-     * Returns a builder for a {@code Combiner} guarding the given shared object.
-     *
-     * @param item the shared object; must not be null
-     * @throws NullPointerException if item is null
-     */
-    public static <E> Builder<E> builder(E item) {
-        return new Builder<>(item);
-    }
-
-    /**
-     * Builder for {@link Combiner}. Unset options use the defaults.
-     */
-    public static final class Builder<E> {
-        private final E item;
-        private int maxCombiningOperations = DEFAULT_MAX_COMBINING_OPERATIONS;
-
-        private Builder(E item) {
-            this.item = Objects.requireNonNull(item, "Item cannot be null");
-        }
-
-        /**
-         * Sets the maximum number of operations the lock holder may serve in one pass.
-         *
-         * @throws IllegalArgumentException if {@code max} is not positive
-         */
-        public Builder<E> maxCombiningOperations(int max) {
-            if (max <= 0) {
-                throw new IllegalArgumentException("maxCombiningOperations must be greater than zero, got " + max);
-            }
-            this.maxCombiningOperations = max;
-            return this;
-        }
-
-
-        public Combiner<E> build() {
-            return new Combiner<>(item, maxCombiningOperations, false);
         }
     }
 

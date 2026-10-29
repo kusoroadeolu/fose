@@ -4,11 +4,14 @@ import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 
 class Node<E> {
+    final int kind;
+    Object arg;
     Object op;
     Throwable err;
     Object result;
     Thread waiter;
     long seq;
+
     volatile int status;
     volatile Node<E> next;
 
@@ -24,8 +27,10 @@ class Node<E> {
     * in between these, after we've enqueued, we'll check if our operation has been applied so we don't wait unnecessarily
     * */
 
-    public Node(Object op) {
+    public Node(int kind, Object op, Object arg) {
+        this.kind = kind;
         this.op = op;
+        this.arg = arg;
     }
 
     @Override
