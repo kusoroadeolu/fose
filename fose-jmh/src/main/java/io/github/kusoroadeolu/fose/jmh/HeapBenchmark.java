@@ -1,6 +1,5 @@
 package io.github.kusoroadeolu.fose.jmh;
 
-import io.github.kusoroadeolu.fose.Combiner;
 import io.github.kusoroadeolu.fose.InstrumentedCombiner;
 import org.openjdk.jmh.annotations.*;
 import org.openjdk.jmh.infra.Blackhole;
@@ -97,7 +96,7 @@ public class HeapBenchmark {
 
         @State(Scope.Thread)
         @AuxCounters(AuxCounters.Type.EVENTS)
-        public static class SharedCounters {
+        public static class SharedMetrics {
             CombinerState shared;
             boolean reporter;
 
@@ -153,21 +152,21 @@ public class HeapBenchmark {
 
 
 
-//    @Benchmark
-//    public Object baselineHold(LockState s) {
-//        Object r;
-//        s.lock.lock();
-//        try {
-//            r = s.baseData.hold();
-//        } finally {
-//            s.lock.unlock();
-//        }
-//        Blackhole.consumeCPU(s.work);
-//        return r;
-//    }
+    @Benchmark
+    public Object baselineHold(LockState s) {
+        Object r;
+        s.lock.lock();
+        try {
+            r = s.baseData.hold();
+        } finally {
+            s.lock.unlock();
+        }
+        Blackhole.consumeCPU(s.work);
+        return r;
+    }
 
     @Benchmark
-    public Object combinedHold(CombinerState s, CombinerState.SharedCounters sc) {
+    public Object combinedHold(CombinerState s, CombinerState.SharedMetrics sc) {
         Object r = s.combiner.apply(HOLD);
         Blackhole.consumeCPU(s.work);
         return r;

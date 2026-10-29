@@ -11,6 +11,8 @@ import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
+import static io.github.kusoroadeolu.fose.Node.*;
+
 class CombinerPad0 extends AbstractOwnableSynchronizer {
     long a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15;
 }
@@ -84,32 +86,46 @@ class CombinerPad4<E> extends CombinerSequenceField<E> {
 
 
 /**
- * A synchronization primitive that lets threads apply operations to a shared object on each other’s behalf.
+ * A synchronization primitive that lets threads apply operations to a
+ * shared object on each other's behalf.
  *
- * <p> In the uncontended case, this primitive behaves no differently than a standard lock, however when contention is detected,
- * other threads can request that the current lock holder apply their request and then wait on the result, periodically
- * trying to become the lock holder if their requests have not been applied yet.
+ * <p>In the uncontended case, this primitive behaves no differently from
+ * a standard lock. When contention is detected, however, threads can ask
+ * the current lock holder to apply their operations for them, then wait
+ * for the result, periodically trying to become the lock holder if their
+ * operations have not been applied yet.
  *
- * <p>An example usage of this class can look like so:
+ * <p>An example usage of this class might look like this:
  * <pre> {@code
+ * class ThreadSafePriorityQueue<E> {
+ *     private final Combiner<PriorityQueue<E>> combiner =
+ *         new Combiner<>(new PriorityQueue<>());
  *
- *  class ThreadSafePriorityQueue<E> {
- *      private final Combiner<PriorityQueue<E>> combiner = new Combiner<>(new PriorityQueue<>());
+ *     public void push(E e) {
+ *         combiner.accept(queue -> queue.offer(e));
+ *     }
  *
- *      public void push(E e) {
- *          combiner.accept(queue -> queue.offer(e));
- *      }
+ *     public E popMinimum() {
+ *         return combiner.apply(queue -> queue.poll());
+ *     }
+ * }}</pre>
  *
- *      public E popMinimum() {
- *          return combiner.apply(queue -> queue.poll());
- *      }
- *  }
+ * <p>An operation may run on a different thread than the one that
+ * submitted it, so it should not depend on thread-local state. It should
+ * also be short, since a combiner runs other threads' operations back to
+ * back and a slow one delays everyone queued behind it.
  *
- * }
- * </pre>
+ * <p>This class is not reentrant: calling a combining operation from
+ * within another combining operation can deadlock. It also makes no
+ * strict fairness guarantees, as threads may barge in and acquire the
+ * lock ahead of queued waiters.
  *
- * <p>An operation may run on a different thread than the one that submitted it, so it should not depend on thread-local state. This class is not reentrant and calling a combining operation within another combining operation can deadlock. Operations are also uninterruptible, the interrupt flag is
- * deferred and is restored on return. Exceptions thrown by an operation are rethrown in the submitting thread as {@link CombiningException}.
+ * <p>Waiting for an operation to be applied is uninterruptible. If a
+ * thread is interrupted while waiting, the interrupt is deferred and its
+ * status is restored on return.
+ *
+ * <p>Exceptions thrown by an operation are rethrown in the submitting
+ * thread as {@link CombiningException}.
  *
  * @param <E> the type of the shared object
  */
@@ -121,36 +137,52 @@ public class Combiner<E> extends CombinerPad4<E> {
      * Combining and the Synchronization-Parallelism Tradeoff" (Hendler, Incze,
      * Shavit, Tzafrir).
      *
-     * Flat combining can be used as an alternative to fine-grained locking for
-     * making a sequential structure thread-safe, while minimizing the
-     * synchronization overhead and cache coherence traffic incurred when
-     * acquiring a lock.
+     * Flat combining is an alternative to fine-grained locking for making a
+     * sequential structure thread-safe, while minimizing the synchronization
+     * overhead and cache coherence traffic incurred when acquiring a lock.
      *
      * The basic idea is that when a thread finds the lock contended, it can
-     * request that its operation be applied by the lock holder. It does this by
-     * enqueueing a node containing its operation (expressed as a function or
-     * consumer lambda), and then periodically checking whether the operation has
-     * been applied or the lock has become available.
+     * request that its operation be applied by the current combiner instead
+     * of waiting to apply it itself.
      *
-     * The publication queue is an unbounded MPSC queue.
-     * An enqueue atomically tries to cas the queue's tail with the
-     * thread's node and then links the previous tail's next pointer to that node.
-     * There is a brief window between swapping the tail and linking
-     * the previous tail's next pointer in which the queue observed
-     * by a traversing lock holder may be inconsistent. Hence, a
-     * combining pass is exited once the lock holder encounters this
-     * inconsistency.
+     * Enqueueing a node is a CAS on the queue's tail, followed by linking the
+     * previous tail's next pointer to the node. There is a brief window between
+     * these two steps in which the queue seen by a traversing combiner may be
+     * inconsistent. A node only becomes visible to the combiner once the
+     * previous tail's next pointer is linked to it, so a combining pass ends
+     * when the combiner sees a null next pointer. A pass is also capped at
+     * maxOps so one combiner cannot get stuck serving others forever.
      *
-     * Waiters near the head of the queue (judged by how far their sequence number
-     * is ahead of the last served operation) use an escalating backoff strategy,
-     * from spin waiting to parking. Waiters further from the head, and virtual
-     * threads, park immediately.
+     * A thread may try to become the combiner when its node is first in the
+     * queue (i.e. its predecessor is head, the last served node). This only
+     * gives it the right to contend, not a guarantee of success, since threads
+     * that are not enqueued may barge in and acquire the lock.
+     *
+     * To avoid unnecessary parks, waiters near the head of the queue (judged by
+     * how far their sequence number is ahead of the last served operation) use
+     * an escalating backoff, from spinning to parking. Waiters further from
+     * the head, and virtual threads, park immediately.
+     *
+     * Signalling parked threads uses a Dekker-like scheme similar to the one
+     * in AQS. A to-be-parked thread publishes a PARKING status, then rechecks
+     * whether its request has been applied or its node is first in the queue
+     * before parking. After releasing the lock, the combiner
+     * atomically clears the status & unparks the next waiter if it is PARKING.
+     * It atomically clears the status of, and unparks, any served waiter that was
+     * PARKING during its combining pass
+     *
+     * Accesses to head (except under the lock), tail and state are volatile
+     * while currSeq uses opaque accesses, which is fine since it is only a
+     * heuristic for choosing a thread's initial wait strategy and isn't needed for
+     * correctness.
+     *
+     * The fields are spread across a chain of padded superclasses to avoid
+     * false sharing between state, tail, head and currSeq.
      *
      * Interrupts are deferred while waiting (park would otherwise return
-     * immediately, and a node cannot be abandoned once published) and restored on
-     * exit. Exceptions thrown by a combined op are rethrown in the owning thread
-     * as CombiningException.
-     *
+     * immediately, and a node cannot be abandoned once published) and restored
+     * on exit. Exceptions thrown by a combined op are rethrown in the owning
+     * thread as CombiningException.
      *
      * References:
      * [1] Flat Combining and the Synchronization-Parallelism Tradeoff
@@ -179,10 +211,7 @@ public class Combiner<E> extends CombinerPad4<E> {
      * */
     static final int SPINS = 1 << 10;
 
-    static final int WAKEUP_SPINS = 1 << 7;
-
-    static final int FN = 1, CONSUMER = 2, BI_FN = 3, BI_CONSUMER = 4;
-
+    static final int POST_PARK_SPINS = 1 << 7;
 
     public Combiner(E item) {
         this(item, MAX_OPERATIONS_PER_PASS, false);
@@ -198,7 +227,7 @@ public class Combiner<E> extends CombinerPad4<E> {
     }
 
 
-    // Public methods
+    // Public APIs
 
     /**
      * Applies the given operation to the shared object while holding exclusive
@@ -261,7 +290,7 @@ public class Combiner<E> extends CombinerPad4<E> {
         Object result;
 
         try {
-            result = runOperation(kind, op, arg, item);
+            result = execute(kind, op, arg, item);
         }catch (Throwable t) {
             throw new CombiningException(t);
         } finally {
@@ -273,7 +302,7 @@ public class Combiner<E> extends CombinerPad4<E> {
 
 
     @SuppressWarnings("unchecked")
-    private static <E> Object runOperation(int kind, Object op, Object arg, E item) {
+    private static <E> Object execute(int kind, Object op, Object arg, E item) {
         return switch (kind) {
             case FN -> ((Function<E, ?>) op).apply(item);
             case BI_FN -> ((BiFunction<E, Object, ?>) op).apply(item, arg);
@@ -318,7 +347,7 @@ public class Combiner<E> extends CombinerPad4<E> {
             while (ops < maxOps && (curr = prev.next) != null) {
 
                 try {
-                    curr.result = runOperation(curr.kind, curr.op, curr.arg, item);
+                    curr.result = execute(curr.kind, curr.op, curr.arg, item);
                 } catch (Throwable t) {
                     curr.err = t;
                 }
@@ -356,13 +385,17 @@ public class Combiner<E> extends CombinerPad4<E> {
                     }
                 }
             }
+
         }
     }
 
     private void notifyNextWaiter(Node<E> prev) {
-        Node<E> succ = prev.next;
-        Thread next = (succ != null && succ.status == Node.PARKING) ? succ.waiter : null;
-        if (next != null) LockSupport.unpark(next);
+        Node<E> next = prev.next;
+        Thread w = (next != null && next.status == Node.PARKING) ? next.waiter : null;
+        if (w != null) {
+            next.unsetStatus(PARKING);
+            LockSupport.unpark(w);
+        }
     }
 
     void recordMetrics(int ops) {
@@ -384,10 +417,11 @@ public class Combiner<E> extends CombinerPad4<E> {
             boolean first = false;
             long seenSeq;
             long remSpins = SPINS;
+            boolean spin = false;
             int status;
 
 
-            o: for (;;) {
+            for (;;) {
                 if (prev != null && prev.next == null) break;
 
                 if (first || prev == null || (first = (prev == head))) {
@@ -399,7 +433,6 @@ public class Combiner<E> extends CombinerPad4<E> {
 
                 if (node == null) {
                     node = new Node<>(kind, op, arg);
-
                 } else if (prev == null) {
                     var t = tail;
                     long seq = t.seq;
@@ -413,7 +446,9 @@ public class Combiner<E> extends CombinerPad4<E> {
 
                     prev = t;
                     prev.next = node;
-
+                } else if (spin && remSpins > 0) {
+                    --remSpins;
+                    Thread.onSpinWait();
                 } else if ((status = node.status) == 0) {
                     int s;
 
@@ -421,30 +456,18 @@ public class Combiner<E> extends CombinerPad4<E> {
                     node.status = s = !w.isVirtual() && shouldSpin(node, seenSeq) ?
                             Node.SPINNING : Node.PARKING;
 
-                    if (s == Node.SPINNING && remSpins <= 0) remSpins = WAKEUP_SPINS;
+                    if (s == Node.SPINNING && remSpins <= 0)
+                        remSpins = POST_PARK_SPINS;
                     //try to spin briefly if we've exhausted
                     //our spin budget but are near the head of the queue
-                    //usually, a thread takes this branch after it's been unparked but was previously a spinner
+                    //usually, a thread takes this branch after it's been unparked and was previously a spinner
+
+
+                    spin = (s == SPINNING);
 
                 } else if (status == Node.SPINNING) {
-
-                    if (remSpins > 0) {
-                        for (long spins = 0; spins < remSpins; ++spins, --remSpins) {
-
-                            if (prev.next == null) break o;
-
-                            if (head == prev) continue o;      // we're first, try acquire
-
-                            //we could a weaker mode here? backed by a full fence before the loop?
-
-                            Thread.onSpinWait();
-                        }
-
-                    } else {
-                        node.status = Node.PARKING; // budget spent, park
-                    }
-
-
+                    node.status = Node.PARKING; // budget spent, park
+                    spin = false;
                 } else {
                     LockSupport.park(this);
                     if (!wasInterrupted && Thread.interrupted()) wasInterrupted = true;
@@ -483,7 +506,7 @@ public class Combiner<E> extends CombinerPad4<E> {
         node.arg = null;
     }
 
-    private boolean acquire() {
+    boolean acquire() {
         if (state == FREE && (long) STATE.getAndAdd(this, 1) == FREE) {
             setExclusiveOwnerThread(Thread.currentThread());
             return true;
@@ -492,7 +515,7 @@ public class Combiner<E> extends CombinerPad4<E> {
         return false;
     }
 
-    private void release() {
+    void release() {
         setExclusiveOwnerThread(null);
         state = 0;
     }
@@ -513,31 +536,6 @@ public class Combiner<E> extends CombinerPad4<E> {
         return tail == from && TAIL.compareAndSet(this, from, to);
     }
 
-
-    //Stuff for instrumenting benchmarks
-    CombinerMetrics metrics() {
-        while (!acquire()) Thread.onSpinWait();
-        var h = getHeadPlain();
-        try {
-            return new CombinerMetrics(_total_ops, _passes, _combined, _passes == 0 ? 0 : (double) _total_ops / _passes);
-        }finally {
-            release();
-            notifyNextWaiter(h);
-        }
-    }
-
-    void resetMetrics() {
-        while (!acquire()) Thread.onSpinWait();
-        var h = getHeadPlain();
-        try {
-            _total_ops = 0;
-            _passes = 0;
-            _combined = 0;
-        }finally {
-            release();
-            notifyNextWaiter(h);
-        }
-    }
 
     static final VarHandle TAIL;
     static final VarHandle HEAD;

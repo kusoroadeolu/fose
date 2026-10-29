@@ -15,11 +15,24 @@ public class InstrumentedCombiner<E> extends Combiner<E> {
         return new InstrumentedCombiner<>(item, maxOperationsPerPass, exposeMetrics);
     }
 
+    //Stuff for instrumenting benchmarks
     public CombinerMetrics metrics() {
-        return super.metrics();
+        while (!acquire()) Thread.onSpinWait();
+        try {
+            return new CombinerMetrics(_total_ops, _passes, _combined, _passes == 0 ? 0 : (double) _total_ops / _passes);
+        }finally {
+            release();
+        }
     }
 
     public void resetMetrics() {
-        super.resetMetrics();
+        while (!acquire()) Thread.onSpinWait();
+        try {
+            _total_ops = 0;
+            _passes = 0;
+            _combined = 0;
+        }finally {
+            release();
+        }
     }
 }

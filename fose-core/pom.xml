@@ -11,12 +11,12 @@
 
     <artifactId>fose-core</artifactId>
 
-<!--    <dependencies>-->
-<!--        <dependency>-->
-<!--            <groupId>org.openjdk.jol</groupId>-->
-<!--            <artifactId>jol-core</artifactId>-->
-<!--            <version>0.17</version>-->
-<!--        </dependency>-->
-<!--    </dependencies>-->
+    <dependencies>
+        <dependency>
+            <groupId>org.openjdk.jol</groupId>
+            <artifactId>jol-core</artifactId>
+            <version>0.17</version>
+        </dependency>
+    </dependencies>
 
 </project>

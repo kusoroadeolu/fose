@@ -1,6 +1,5 @@
 package io.github.kusoroadeolu.fose.jmh;
 
-import io.github.kusoroadeolu.fose.Combiner;
 import io.github.kusoroadeolu.fose.InstrumentedCombiner;
 import org.openjdk.jmh.annotations.*;
 import org.openjdk.jmh.infra.Blackhole;
@@ -12,6 +11,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 
@@ -43,10 +43,7 @@ public class CacheLineBenchmark {
     }
 
     //avoid allocations per call.
-    static final Function<Data, Object> ADD = d -> {
-        d.add();
-        return null;
-    };
+    static final Consumer<Data> ADD = Data::add;
 
 
     @State(Scope.Benchmark)
@@ -78,7 +75,7 @@ public class CacheLineBenchmark {
 
         @State(Scope.Thread)
         @AuxCounters(AuxCounters.Type.EVENTS)
-        public static class SharedCounters {
+        public static class SharedMetrics {
             CombinerState shared;
             boolean reporter;
 
@@ -142,16 +139,16 @@ public class CacheLineBenchmark {
         } finally {
             sc.lock.unlock();
         }
+
         Blackhole.consumeCPU(sc.work);
     }
 
 
 
     @Benchmark
-    public Object combinedAdd(CombinerState s, CombinerState.SharedCounters sc) {
-        Object r = s.combiner.apply(ADD);
+    public void combinedAdd(CombinerState s, CombinerState.SharedMetrics sc) {
+        s.combiner.accept(ADD);
         Blackhole.consumeCPU(s.work);
-        return r;
     }
 
 
