@@ -1,6 +1,7 @@
 package io.github.kusoroadeolu.fose.jmh;
 
 import io.github.kusoroadeolu.fose.Combiner;
+import io.github.kusoroadeolu.fose.InstrumentedCombiner;
 import org.openjdk.jmh.annotations.*;
 import org.openjdk.jmh.infra.Blackhole;
 import org.openjdk.jmh.results.format.ResultFormatType;
@@ -60,7 +61,7 @@ public class CacheLineBenchmark {
         public int maxCombOps;
 
         Data combData;
-        Combiner<Data> combiner;
+        InstrumentedCombiner<Data> combiner;
         AtomicBoolean claimed;
 
         @Setup(Level.Iteration)
@@ -72,7 +73,7 @@ public class CacheLineBenchmark {
         @Setup(Level.Trial)
         public void setup() {
             combData = new Data(lines);
-            combiner = Combiner.builder(combData).exposeMetrics().maxCombiningOperations(maxCombOps).build();
+            combiner = InstrumentedCombiner.create(combData, maxCombOps);
         }
 
         @State(Scope.Thread)

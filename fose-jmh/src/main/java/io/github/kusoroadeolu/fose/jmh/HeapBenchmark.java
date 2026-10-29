@@ -1,9 +1,9 @@
 package io.github.kusoroadeolu.fose.jmh;
 
 import io.github.kusoroadeolu.fose.Combiner;
+import io.github.kusoroadeolu.fose.InstrumentedCombiner;
 import org.openjdk.jmh.annotations.*;
 import org.openjdk.jmh.infra.Blackhole;
-import org.openjdk.jmh.profile.JavaFlightRecorderProfiler;
 import org.openjdk.jmh.results.format.ResultFormatType;
 import org.openjdk.jmh.runner.Runner;
 import org.openjdk.jmh.runner.options.OptionsBuilder;
@@ -78,13 +78,13 @@ public class HeapBenchmark {
         public int maxCombOps;
 
         HeapData combData;
-        Combiner<HeapData> combiner;
+        InstrumentedCombiner<HeapData> combiner;
 
 
         @Setup(Level.Trial)
         public void setup() {
             combData = new HeapData(size);
-            combiner = Combiner.builder(combData).exposeMetrics().maxCombiningOperations(maxCombOps).build();
+            combiner = InstrumentedCombiner.create(combData, maxCombOps);
         }
 
         AtomicBoolean claimed;
@@ -153,18 +153,18 @@ public class HeapBenchmark {
 
 
 
-    @Benchmark
-    public Object baselineHold(LockState s) {
-        Object r;
-        s.lock.lock();
-        try {
-            r = s.baseData.hold();
-        } finally {
-            s.lock.unlock();
-        }
-        Blackhole.consumeCPU(s.work);
-        return r;
-    }
+//    @Benchmark
+//    public Object baselineHold(LockState s) {
+//        Object r;
+//        s.lock.lock();
+//        try {
+//            r = s.baseData.hold();
+//        } finally {
+//            s.lock.unlock();
+//        }
+//        Blackhole.consumeCPU(s.work);
+//        return r;
+//    }
 
     @Benchmark
     public Object combinedHold(CombinerState s, CombinerState.SharedCounters sc) {
@@ -184,7 +184,7 @@ public class HeapBenchmark {
                             .threads(t)
                             .resultFormat(ResultFormatType.JSON)
                             .result(resultFile)
-                            .addProfiler(JavaFlightRecorderProfiler.class, "dir=C:\\jfr-fc")
+//                            .addProfiler(JavaFlightRecorderProfiler.class, "dir=C:\\jfr-fc")
                             .build())
                     .run();
         }
