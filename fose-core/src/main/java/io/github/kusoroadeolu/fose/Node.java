@@ -2,45 +2,63 @@ package io.github.kusoroadeolu.fose;
 
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
-import java.util.concurrent.atomic.AtomicInteger;
 
 class Node<E> {
+    final int kind;
+    Object arg;
     Object op;
     Throwable err;
-    Node<E> next;
     Object result;
+    Thread waiter;
+    long seq;
 
-    public Node(Object op) {
+    volatile int status;
+    volatile Node<E> next;
+
+    static final int PARKING = 1; //indicates a thread is about to park
+    static final int SPINNING = 2;
+
+
+    //Here, we'll do something quite similar to the waiting scheme in aqs to support unbounded parks
+
+    /*
+    * Enqueue node, spin briefly (based on thread count, otherwise if oversubscribed, we try to park)
+    * Create node - try to acquire lock - enqueue - try to acquire lock (if we're next on the queue i.e. head.next) - set status - retry acquiring the lock (if we're next on the queue) - then spin if we aren't oversubscribed before parking
+    * in between these, after we've enqueued, we'll check if our operation has been applied so we don't wait unnecessarily
+    * */
+
+    public Node(int kind, Object op, Object arg) {
+        this.kind = kind;
         this.op = op;
+        this.arg = arg;
     }
 
-    public void srDone() {
-        OP.setRelease(this, null);
+    @Override
+    public String toString() {
+        return "Node{" +
+                "status=" + status +
+                ", waiter=" + waiter +
+                '}';
     }
 
-    public void srNext(Node<E> node) {
-        NEXT.setRelease(this, node);
+    void clearStatus() {
+        STATUS.setOpaque(this, 0);
     }
 
-    public boolean laDone() {
-        return OP.getAcquire(this) ==  null;
+    public void unsetStatus(int v) {
+        STATUS.getAndBitwiseAnd(this, ~v);
     }
 
 
-    public Node<E> lvNext() {
-        return (Node<E>) NEXT.getVolatile(this);
-    }
-
-    static final VarHandle OP;
-    static final VarHandle NEXT;
+    static final VarHandle STATUS;
 
     static {
         var lookup = MethodHandles.lookup();
         try {
-            OP = lookup.findVarHandle(Node.class, "op", Object.class);
-            NEXT = lookup.findVarHandle(Node.class, "next", Node.class);
+            STATUS = lookup.findVarHandle(Node.class, "status", int.class);
         }catch (NoSuchFieldException | IllegalAccessException e) {
             throw new RuntimeException(e);
         }
     }
+
 }
