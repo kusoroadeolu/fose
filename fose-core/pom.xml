@@ -11,7 +11,8 @@
 
     <artifactId>fose-core</artifactId>
 
-
-
+    <name>fose-core</name>
+    <description>Core module for fose</description>
+    <url>https://github.com/kusoroadeolu/fose</url>
 
 </project>

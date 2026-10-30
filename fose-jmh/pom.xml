@@ -11,6 +11,9 @@
 
     <artifactId>fose-jmh</artifactId>
 
+    <name>fose-jmh</name>
+    <description>Benchmarks for fose</description>
+
     <dependencies>
         <dependency>
             <groupId>org.openjdk.jmh</groupId>

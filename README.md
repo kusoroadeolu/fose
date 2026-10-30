@@ -14,13 +14,11 @@ class ThreadSafePriorityQueue<E> {
         combiner.accept(queue -> queue.offer(e));
     }
 
-    public E popMinimum() {
+    public E popMin() {
         return combiner.apply(queue -> queue.poll());
     }
 }
 ```
-
-Uncontended, it behaves like a plain lock. Contended, it batches.
 
 # Design #
 * A lock guards the shared object. A thread that wins the lock runs its own operation, then serves the queue.
@@ -31,7 +29,7 @@ Uncontended, it behaves like a plain lock. Contended, it batches.
 * Parked threads are signalled with a Dekker-style handshake (similar to AQS), so wakeups aren't lost.
 * `state`, `tail`, `head` and the sequence counter are spread across padded superclasses to avoid false sharing.
 
-See the comments in `Combiner.java` for the full walkthrough.
+See the comments in `Combiner.java` for a more detailed explanation.
 
 # Features #
 * `apply(fn)` and `accept(consumer)`, plus `BiFunction` / `BiConsumer` variants that take an argument.
@@ -45,26 +43,24 @@ See the comments in `Combiner.java` for the full walkthrough.
 * Requires Java 21.
 
 ## Maven ##
-Not published yet.
 
 ```
-<!-- TODO: fill in once published -->
 <dependency>
   <groupId>io.github.kusoroadeolu</groupId>
   <artifactId>fose-core</artifactId>
-  <version>TODO</version>
+  <version>0.1.0</version>
 </dependency>
 ```
 
 # Performance #
-Benchmarks are written with JMH and compare `Combiner` against a non-fair `ReentrantLock` guarding the same data. Each operation is followed by a fixed amount of busy work outside the lock (`Blackhole.consumeCPU(100)`). Results are sampled latency per operation in nanoseconds, across 1 up to 2x core count threads.
+Benchmarks are written with JMH and compare `Combiner` against a non-fair `ReentrantLock` guarding the same data. Each operation is followed by a fixed amount of busy work outside the lock simulated using `Blackhole.consumeCpu()`.
+Results show sampled per-operation latency in nanoseconds, measured with 1 thread up to 2x your machine’s logical CPU count.
 
-Two workloads:
-
+There are two workloads we benchmark against:
 * **Cache line:** each operation writes to 5 counters, each on its own cache line. This is the best case for combining, since a plain lock drags all five lines across cores on every handoff.
 * **Heap hold:** a 65,536-element binary min-heap (512 KB). Each operation pops the min and reinserts `min + random delta`. A larger working set, and operations that return a value.
 
-Machine: Intel i5 (4 cores / 8 logical CPUs), Windows, JDK 21.
+- Machine: Intel i5 (4 cores / 8 logical CPUs), Windows, JDK 21.
 
 Mean latency per operation in nanoseconds (lower is better). Speedup is `ReentrantLock / Combiner`.
 

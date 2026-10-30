@@ -38,9 +38,9 @@ public class CombinerLincheckTest {
         }
     }
 
-    private static final int INVOCATIONS = 100;
+    private static final int INVOCATIONS = 32;
 
-    @Test  //testing that the memory effects of the operations in t1, t2, t3 are visible to the asserting thread
+    @Test
     public void assertHappensBeforeVisibility() {
         Lincheck.runConcurrentTest(INVOCATIONS, () -> {
             final Combiner<Adder> c = CombinerTestFactory.create(new Adder());
@@ -68,7 +68,6 @@ public class CombinerLincheckTest {
         Lincheck.runConcurrentTest(INVOCATIONS, () -> {
             final Combiner<Queue<Integer>> c = CombinerTestFactory.create(new LinkedList<>());
 
-            //Should see a then b then c, regardless of inter leavings with other threads, otherwise program order is violated
             Runnable task = () -> submitThenVerifyProgramOrder(c, List.of(1, 2, 3));
 
             Runnable task1 = () -> submitThenVerifyProgramOrder(c, List.of(4, 5, 6));

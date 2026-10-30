@@ -45,7 +45,6 @@ class CombinerFields<E> extends CombinerPad2<E> {
     long _total_ops;
 
     public CombinerFields(E item) {
-
         this.item = item;
     }
 }
@@ -187,11 +186,6 @@ public class Combiner<E> extends CombinerPad4<E> {
      *     (Fatourou, Kallimanis)
      */
 
-    final int spins;
-    final int postParkSpins;
-    final boolean exposeMetrics;
-    final int maxOperationsPerPass;
-
     /**
      * Default maximum number of operations a combiner can serve in one pass
      * */
@@ -217,6 +211,11 @@ public class Combiner<E> extends CombinerPad4<E> {
     * */
     static final int POST_PARK_SPINS = 1 << 7;
 
+    final int spins;
+    final int postParkSpins;
+    final boolean exposeMetrics;
+    final int maxOperationsPerPass;
+
     //Public constructors
     public Combiner(E item) {
         this(item, MAX_OPERATIONS_PER_PASS, false);
@@ -241,12 +240,6 @@ public class Combiner<E> extends CombinerPad4<E> {
         if (maxOperationsPerPass < 1) throw new IllegalArgumentException("maxOperationsPerPass must be >= 1, got " + maxOperationsPerPass);
         this.maxOperationsPerPass = maxOperationsPerPass;
         head = tail = new Node<>(-1, null, null);
-    }
-
-
-
-    private static int validate(int m) {
-        return m;
     }
 
     // Public APIs
