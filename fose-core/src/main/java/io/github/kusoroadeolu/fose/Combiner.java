@@ -31,28 +31,22 @@ class CombinerWaiterField<E> extends CombinerPad1 {
 }
 
 class CombinerPad2<E> extends CombinerWaiterField<E> {
+    byte f0, f1, f2, f3; //extra padding to fill in the 4 byte gap
     long a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16;
 }
 
 class CombinerFields<E> extends CombinerPad2<E> {
     volatile Node<E> head;
     final E item;
-    //ideally we'd use an int, but to avoid hotspot reordering this with the tail fail due to alignment gaps,
-    // we use a long
-    //will switch to byte padding later to avoid this
-
-    final long maxOps; //max operations per combining session
-    final boolean exposeMetrics;
 
     //metrics
     long _combined;
     long _passes;
     long _total_ops;
 
-    public CombinerFields(E item, int maxOps, boolean exposeMetrics) {
+    public CombinerFields(E item) {
+
         this.item = item;
-        this.maxOps = maxOps;
-        this.exposeMetrics = exposeMetrics;
     }
 }
 
@@ -60,16 +54,16 @@ class CombinerPad3<E> extends CombinerFields<E> {
     long a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16;
 
 
-    public CombinerPad3(E item, int maxOps, boolean exposeMetrics) {
-        super(item, maxOps, exposeMetrics);
+    public CombinerPad3(E item) {
+        super(item);
     }
 }
 
 class CombinerSequenceField<E> extends CombinerPad3<E> {
     long currSeq;
 
-    public CombinerSequenceField(E item, int maxOps, boolean exposeMetrics) {
-        super(item, maxOps, exposeMetrics);
+    public CombinerSequenceField(E item) {
+        super(item);
     }
 }
 
@@ -78,8 +72,8 @@ class CombinerPad4<E> extends CombinerSequenceField<E> {
     long a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16;
 
 
-    public CombinerPad4(E item, int maxOps, boolean exposeMetrics) {
-        super(item, maxOps, exposeMetrics);
+    public CombinerPad4(E item) {
+        super(item);
     }
 }
 
@@ -105,7 +99,7 @@ class CombinerPad4<E> extends CombinerSequenceField<E> {
  *         combiner.accept(queue -> queue.offer(e));
  *     }
  *
- *     public E popMinimum() {
+ *     public E popMin() {
  *         return combiner.apply(queue -> queue.poll());
  *     }
  * }}</pre>
@@ -128,7 +122,9 @@ class CombinerPad4<E> extends CombinerSequenceField<E> {
  * thread as {@link CombiningException}.
  *
  * @param <E> the type of the shared object
+ * @author kusoroadeolu
  */
+@SuppressWarnings("unchecked")
 public class Combiner<E> extends CombinerPad4<E> {
 
 
@@ -193,6 +189,8 @@ public class Combiner<E> extends CombinerPad4<E> {
 
     final int spins;
     final int postParkSpins;
+    final boolean exposeMetrics;
+    final int maxOperationsPerPass;
 
     /**
      * Default maximum number of operations a combiner can serve in one pass
@@ -229,20 +227,27 @@ public class Combiner<E> extends CombinerPad4<E> {
     }
 
     //For benchmarks
-    Combiner(E item, int maxCombiningOperations, boolean exposeMetrics) {
-        this(item, maxCombiningOperations, exposeMetrics, SPINS, POST_PARK_SPINS);
+    Combiner(E item, int maxOperationsPerPass, boolean exposeMetrics) {
+        this(item, maxOperationsPerPass, exposeMetrics, SPINS, POST_PARK_SPINS);
     }
 
 
     // For tests
-    Combiner(E item, int maxCombiningOperations, boolean exposeMetrics, int s, int pps) {
-        super(item, maxCombiningOperations, exposeMetrics);
-        this.spins = s;
-        this.postParkSpins = pps;
+    Combiner(E item, int maxOperationsPerPass, boolean exposeMetrics, int spins, int postParkSpins) {
+        super(Objects.requireNonNull(item));
+        this.spins = spins;
+        this.postParkSpins = postParkSpins;
+        this.exposeMetrics = exposeMetrics;
+        if (maxOperationsPerPass < 1) throw new IllegalArgumentException("maxOperationsPerPass must be >= 1, got " + maxOperationsPerPass);
+        this.maxOperationsPerPass = maxOperationsPerPass;
         head = tail = new Node<>(-1, null, null);
     }
 
 
+
+    private static int validate(int m) {
+        return m;
+    }
 
     // Public APIs
 
@@ -287,7 +292,7 @@ public class Combiner<E> extends CombinerPad4<E> {
         return submit(BI_FN, operation, arg);
     }
     /**
-     * Similar to {@link #apply(A, BiFunction)} for operations with no result.
+     * Similar to {@link #apply(Object, BiFunction)} for operations with no result.
      * Same threading and exception behavior.
      */
     public <A> void accept(A arg, BiConsumer<? super E, ? super A> operation) {
@@ -350,17 +355,33 @@ public class Combiner<E> extends CombinerPad4<E> {
         return result(node);
     }
 
-    //Walks
+    private void notifyNextWaiter(Node<E> prev) {
+        Node<E> next = prev.next;
+        Thread w = (next != null && next.status == Node.PARKING) ? next.waiter : null;
+        if (w != null) {
+            next.unsetStatus(PARKING);
+            LockSupport.unpark(w);
+        }
+    }
+
+    // walks the queue applying operations on the behalf of other
+    // thread until we reach a null node or reach hte max combining limit
+    // if we come across a parked waiter we store their node in a waiter array
+    // after combining we handoff to the next eligible thread
+    // while also handling the issue of a lost wakeup (see below)
+    // and unpark parked threads we came across during our pass
     private void combinePass() {
+        //assert Thread.currentThread() == getOwner();
         Node<E> prev = getHeadPlain();
         Node<E> curr;
         final E item = this.item;
         Node<E>[] waiters = null;
         int ops = 0;
         int waiting = 0;
+        int m = maxOperationsPerPass;
 
         try {
-            while (ops < maxOps && (curr = prev.next) != null) {
+            while (ops < m && (curr = prev.next) != null) {
 
                 try {
                     curr.result = execute(curr.kind, curr.op, curr.arg, item);
@@ -372,8 +393,7 @@ public class Combiner<E> extends CombinerPad4<E> {
 
                 if (curr.status == Node.PARKING) {
                     if (waiters == null)
-                        waiters = new Node[(int) maxOps];
-
+                        waiters = new Node[(int) (maxOperationsPerPass - ops)];
                     waiters[waiting++] = curr;
                 }
 
@@ -402,25 +422,6 @@ public class Combiner<E> extends CombinerPad4<E> {
                 }
             }
 
-        }
-    }
-
-    private void notifyNextWaiter(Node<E> prev) {
-        Node<E> next = prev.next;
-        Thread w = (next != null && next.status == Node.PARKING) ? next.waiter : null;
-        if (w != null) {
-            next.unsetStatus(PARKING);
-            LockSupport.unpark(w);
-        }
-    }
-
-    void recordMetrics(int ops) {
-        if (exposeMetrics) {
-            ++this._passes;
-            if (ops > 0) {
-                ++this._combined;
-                _total_ops += ops;
-            }
         }
     }
 
@@ -494,6 +495,7 @@ public class Combiner<E> extends CombinerPad4<E> {
         } finally {
             if (wasInterrupted) Thread.currentThread().interrupt();
         }
+
         return result(node);
     }
 
@@ -637,10 +639,22 @@ public class Combiner<E> extends CombinerPad4<E> {
                 : "[Locked by thread " + o.getName() + "]");
     }
 
+    private void recordMetrics(int ops) {
+        if (exposeMetrics) {
+            ++this._passes;
+            if (ops > 0) {
+                ++this._combined;
+                _total_ops += ops;
+            }
+        }
+    }
+
     static final VarHandle TAIL;
     static final VarHandle HEAD;
     static final VarHandle STATE;
     static final VarHandle CURR_SEQ;
+
+
 
     static {
         var lookup = MethodHandles.lookup();
