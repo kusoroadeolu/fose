@@ -17,12 +17,12 @@ class CombinerPad0 extends AbstractOwnableSynchronizer {
     long a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15;
 }
 
-class CombinerLockField extends CombinerPad0 {
+class CombinerStateField extends CombinerPad0 {
     volatile long state = FREE;
     static final long FREE = 0;
 }
 
-class CombinerPad1 extends CombinerLockField {
+class CombinerPad1 extends CombinerStateField {
     long a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16;
 }
 
@@ -554,27 +554,81 @@ public class Combiner<E> extends CombinerPad4<E> {
 
 
 
-    // Inspection & Debuggability, will expose later
-    boolean isLocked() {
+    // Inspection & Debuggability
+    /**
+     * Queries whether this combiner's lock is currently held by any thread.
+     *
+     * <p>This method is designed for monitoring system state, not for
+     * synchronization control. The result may be stale by the time it
+     * returns.
+     *
+     * @return {@code true} if some thread currently holds the lock
+     */
+    public boolean isLocked() {
         return state != FREE;
     }
 
-    boolean isHeldByCurrentThread() {
+    /**
+     * Queries whether the calling thread currently holds the lock.
+     *
+     * <p>Note that an operation submitted by one thread may be run by another,
+     * so this reports whether the <em>calling thread</em> is the active
+     * combiner, not whether its own operation is running. Inside an operation,
+     * it returns {@code true} on whichever thread is executing it, and
+     * {@code false} on the submitting thread if that thread is just waiting.
+     * It is mainly useful for assertions, for example to check that a
+     * combining operation is not being called from within another one, since
+     * this class is not reentrant.
+     *
+     * @return {@code true} if the calling thread holds the lock
+     */
+    public boolean isHeldByCurrentThread() {
         return getExclusiveOwnerThread() == Thread.currentThread();
     }
 
-    Thread getOwner() {
+    /**
+     * Returns the thread that currently holds the lock, or {@code null} if
+     * it is not held.
+     *
+     * <p>The owner is the thread currently combining, which may be running
+     * operations submitted by other threads. This method is best-effort and
+     * intended for debugging and monitoring: the lock state and owner are read
+     * separately, so it may briefly return {@code null} just after the lock is
+     * acquired or a stale thread just after it is released.
+     *
+     * @return the owner, or {@code null} if the lock is not held
+     */
+    public Thread getOwner() {
         return state == FREE ? null : getExclusiveOwnerThread();
     }
 
-    int getQueueLength() {
+    /**
+     * Returns an estimate of the number of operations waiting to be applied.
+     *
+     * <p>The value is computed from internal sequence numbers read without
+     * synchronization, so it is only a snapshot of a moving target and may be
+     * slightly off while threads are enqueuing or being served. It is designed
+     * for monitoring and diagnostics, not for synchronization control.
+     *
+     * @return the estimated number of queued operations, never negative
+     */
+    public int getQueueLength() {
         return (int) Math.max(0, tail.seq - currSeq());
     }
 
-    boolean hasQueuedThreads() {
+    /**
+     * Queries whether any operations are estimated to be waiting to be
+     * applied.
+     *
+     * <p>Because this is based on {@link #getQueueLength()}, a {@code true}
+     * result does not guarantee that any operation is still waiting by the
+     * time the caller acts on it. Intended for monitoring only.
+     *
+     * @return {@code true} if the estimated queue length is above zero
+     */
+    public boolean hasQueuedThreads() {
         return getQueueLength() > 0;
     }
-
     @Override
     public String toString() {
         Thread o = getOwner();
