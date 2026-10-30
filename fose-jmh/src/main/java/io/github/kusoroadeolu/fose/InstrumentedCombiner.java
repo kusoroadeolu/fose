@@ -2,7 +2,6 @@ package io.github.kusoroadeolu.fose;
 
 public class InstrumentedCombiner<E> extends Combiner<E> {
 
-
     InstrumentedCombiner(E item, int maxCombiningOperations, boolean exposeMetrics) {
         super(item, maxCombiningOperations, exposeMetrics);
     }

@@ -70,7 +70,7 @@ public class CacheLineBenchmark {
         @Setup(Level.Trial)
         public void setup() {
             combData = new Data(lines);
-            combiner = InstrumentedCombiner.create(combData, maxCombOps);
+            combiner = InstrumentedCombiner.create(combData, maxCombOps, false);
         }
 
         @State(Scope.Thread)
@@ -167,7 +167,6 @@ public class CacheLineBenchmark {
                     .build())
                     .run();
 
-            // .addProfiler(JavaFlightRecorderProfiler.class, "dir=C:\\jfr-fc")
 
         }
     }

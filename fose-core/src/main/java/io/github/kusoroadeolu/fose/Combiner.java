@@ -191,6 +191,9 @@ public class Combiner<E> extends CombinerPad4<E> {
      *     (Fatourou, Kallimanis)
      */
 
+    final int spins;
+    final int postParkSpins;
+
     /**
      * Default maximum number of operations a combiner can serve in one pass
      * */
@@ -207,12 +210,16 @@ public class Combiner<E> extends CombinerPad4<E> {
     static final int MAX_SPINNING_WAITERS = (int) (NCPU * 0.6);
 
     /**
-     * Initial max number of spins a spinning waiter can exhaust before parking
+     * Max number of spins a spinning waiter can exhaust before parking
      * */
     static final int SPINS = 1 << 10;
 
+    /**
+    * Max number of spins a previously parked waiter can exhaust before reparking
+    * */
     static final int POST_PARK_SPINS = 1 << 7;
 
+    //Public constructors
     public Combiner(E item) {
         this(item, MAX_OPERATIONS_PER_PASS, false);
     }
@@ -221,10 +228,20 @@ public class Combiner<E> extends CombinerPad4<E> {
         this(item, maxOperationsPerPass, false);
     }
 
+    //For benchmarks
     Combiner(E item, int maxCombiningOperations, boolean exposeMetrics) {
+        this(item, maxCombiningOperations, exposeMetrics, SPINS, POST_PARK_SPINS);
+    }
+
+
+    // For tests
+    Combiner(E item, int maxCombiningOperations, boolean exposeMetrics, int s, int pps) {
         super(item, maxCombiningOperations, exposeMetrics);
+        this.spins = s;
+        this.postParkSpins = pps;
         head = tail = new Node<>(-1, null, null);
     }
+
 
 
     // Public APIs
@@ -276,7 +293,6 @@ public class Combiner<E> extends CombinerPad4<E> {
     public <A> void accept(A arg, BiConsumer<? super E, ? super A> operation) {
         submit(BI_CONSUMER, operation, arg);
     }
-
 
     //Internals & Helpers
     private <R> R submit(int kind, Object op, Object arg) {
@@ -416,7 +432,7 @@ public class Combiner<E> extends CombinerPad4<E> {
         try {
             boolean first = false;
             long seenSeq;
-            long remSpins = SPINS;
+            long remSpins = spins;
             boolean spin = false;
             int status;
 
@@ -457,7 +473,7 @@ public class Combiner<E> extends CombinerPad4<E> {
                             Node.SPINNING : Node.PARKING;
 
                     if (s == Node.SPINNING && remSpins <= 0)
-                        remSpins = POST_PARK_SPINS;
+                        remSpins = postParkSpins;
                     //try to spin briefly if we've exhausted
                     //our spin budget but are near the head of the queue
                     //usually, a thread takes this branch after it's been unparked and was previously a spinner
@@ -486,7 +502,7 @@ public class Combiner<E> extends CombinerPad4<E> {
         return (s - seenSeq) <= MAX_SPINNING_WAITERS;
     }
 
-    private  <R> R result(Node<E> node) {
+    private <R> R result(Node<E> node) {
         if (node.err != null) {
             Throwable t = node.err;
             cleanNode(node);
@@ -537,6 +553,36 @@ public class Combiner<E> extends CombinerPad4<E> {
     }
 
 
+
+    // Inspection & Debuggability, will expose later
+    boolean isLocked() {
+        return state != FREE;
+    }
+
+    boolean isHeldByCurrentThread() {
+        return getExclusiveOwnerThread() == Thread.currentThread();
+    }
+
+    Thread getOwner() {
+        return state == FREE ? null : getExclusiveOwnerThread();
+    }
+
+    int getQueueLength() {
+        return (int) Math.max(0, tail.seq - currSeq());
+    }
+
+    boolean hasQueuedThreads() {
+        return getQueueLength() > 0;
+    }
+
+    @Override
+    public String toString() {
+        Thread o = getOwner();
+        return super.toString() + (o == null
+                ? "[Unlocked]"
+                : "[Locked by thread " + o.getName() + "]");
+    }
+
     static final VarHandle TAIL;
     static final VarHandle HEAD;
     static final VarHandle STATE;
@@ -553,4 +599,5 @@ public class Combiner<E> extends CombinerPad4<E> {
             throw new ExceptionInInitializerError(e);
         }
     }
+
 }

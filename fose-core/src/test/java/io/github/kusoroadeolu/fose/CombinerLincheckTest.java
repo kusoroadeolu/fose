@@ -8,9 +8,8 @@ import java.util.Arrays;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Queue;
-import java.util.concurrent.locks.LockSupport;
 
-class CombinerLincheckTest {
+public class CombinerLincheckTest {
     static class Adder {
         int i;
 
@@ -22,6 +21,7 @@ class CombinerLincheckTest {
             return i;
         }
     }
+
 
     static class ThrowingAdder {
         Adder adder = new Adder();
@@ -38,12 +38,12 @@ class CombinerLincheckTest {
         }
     }
 
-    private static final int INVOCATIONS = 32;
+    private static final int INVOCATIONS = 100;
 
     @Test  //testing that the memory effects of the operations in t1, t2, t3 are visible to the asserting thread
     public void assertHappensBeforeVisibility() {
         Lincheck.runConcurrentTest(INVOCATIONS, () -> {
-            Combiner<Adder> c = new Combiner<>(new Adder());
+            final Combiner<Adder> c = CombinerTestFactory.create(new Adder());
             Runnable task = () -> c.accept(Adder::add);
             Thread t = new Thread(task);
             Thread t1 = new Thread(task);
@@ -64,9 +64,39 @@ class CombinerLincheckTest {
     }
 
     @Test
+    public void assertLocalWritesStayOrdered() {
+        Lincheck.runConcurrentTest(INVOCATIONS, () -> {
+            final Combiner<Queue<Integer>> c = CombinerTestFactory.create(new LinkedList<>());
+
+            //Should see a then b then c, regardless of inter leavings with other threads, otherwise program order is violated
+            Runnable task = () -> submitThenVerifyProgramOrder(c, List.of(1, 2, 3));
+
+            Runnable task1 = () -> submitThenVerifyProgramOrder(c, List.of(4, 5, 6));
+
+            Runnable task2 = () -> submitThenVerifyProgramOrder(c, List.of(7, 8, 9));
+
+
+            Thread t = new Thread(task);
+            Thread t1 = new Thread(task1);
+            Thread t2 = new Thread(task2);
+            t.start();
+            t1.start();
+            t2.start();
+
+            try {
+                t.join();
+                t1.join();
+                t2.join();
+            }catch (InterruptedException e) {
+                throw new AssertionError(e);
+            }
+        });
+    }
+
+    @Test
     public void assertNoLostWrites() {
         Lincheck.runConcurrentTest(INVOCATIONS, () -> {
-            Combiner<Queue<Integer>> c = new Combiner<>(new LinkedList<>());
+            final Combiner<Queue<Integer>> c = CombinerTestFactory.create(new LinkedList<>());
             c.accept(l -> l.addAll(List.of(1, 2, 3)));
 
             Runnable task = () -> {
@@ -95,7 +125,7 @@ class CombinerLincheckTest {
     @Test
     public void assertExceptionsDoNotHaltProgress() {
         Lincheck.runConcurrentTest(INVOCATIONS, () -> {
-            Combiner<ThrowingAdder> c = new Combiner<>(new ThrowingAdder());
+            final Combiner<ThrowingAdder> c = CombinerTestFactory.create(new ThrowingAdder());
 
             Runnable throwingTask = () -> Assertions.assertThrows(CombiningException.class, () -> c.accept(ThrowingAdder::throwingAdd));
 
@@ -123,7 +153,7 @@ class CombinerLincheckTest {
     @Test
     public void assertEachCallerGetsItsOwnResult() {
         Lincheck.runConcurrentTest(INVOCATIONS, () -> {
-            Combiner<Adder> c = new Combiner<>(new Adder());
+            final Combiner<Adder> c = CombinerTestFactory.create(new Adder());
             int[] results = new int[3];
             Thread[] threads = new Thread[3];
 
@@ -141,36 +171,6 @@ class CombinerLincheckTest {
 
             Arrays.sort(results);
             Assertions.assertArrayEquals(new int[]{0, 1, 2}, results);
-        });
-    }
-
-    @Test
-    public void assertLocalWritesStayOrdered() {
-        Lincheck.runConcurrentTest(INVOCATIONS, () -> {
-            Combiner<Queue<Integer>> c = new Combiner<>(new LinkedList<>());
-
-            //Should see a then b then c, regardless of inter leavings with other threads, otherwise program order is violated
-            Runnable task = () -> submitThenVerifyProgramOrder(c, List.of(1, 2, 3));
-
-            Runnable task1 = () -> submitThenVerifyProgramOrder(c, List.of(4, 5, 6));
-
-            Runnable task2 = () -> submitThenVerifyProgramOrder(c, List.of(7, 8, 9));
-
-
-            Thread t = new Thread(task);
-            Thread t1 = new Thread(task1);
-            Thread t2 = new Thread(task2);
-            t.start();
-            t1.start();
-            t2.start();
-
-            try {
-                t.join();
-                t1.join();
-                t2.join();
-            }catch (InterruptedException e) {
-                throw new AssertionError(e);
-            }
         });
     }
 

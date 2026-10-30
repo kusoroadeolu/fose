@@ -1,14 +1,14 @@
 # fose
 
 A flat combining primitive for Java. Flat combining allows threads to apply operations to a shared object on each other's behalf, when contention on a lock is detected.
-## Usage
+***
 
-You can simply wrap a sequential object, then submit operations against it:
+Wrap a sequential object, then submit operations against it:
 
 ```java
 class ThreadSafePriorityQueue<E> {
     private final Combiner<PriorityQueue<E>> combiner =
-            Combiner.builder(new PriorityQueue<E>()).build();
+            new Combiner<>(new PriorityQueue<>());
 
     public void push(E e) {
         combiner.accept(queue -> queue.offer(e));
@@ -20,84 +20,101 @@ class ThreadSafePriorityQueue<E> {
 }
 ```
 
-`apply` takes a `Function` and returns its result. `accept` is the same thing for operations with no result.
+Uncontended, it behaves like a plain lock. Contended, it batches.
 
-Requires Java 17.
+# Design #
+* A lock guards the shared object. A thread that wins the lock runs its own operation, then serves the queue.
+* A thread that loses enqueues a node holding its operation (a CAS on the queue tail), then waits for a result.
+* The lock holder (the combiner) walks the queue, applies each operation, and publishes the result on the node.
+* A combining pass is capped at `maxOps` (default 25) so one thread can't get stuck serving others forever.
+* Waiters near the head of the queue spin briefly, then park. Waiters further back, and virtual threads, park immediately.
+* Parked threads are signalled with a Dekker-style handshake (similar to AQS), so wakeups aren't lost.
+* `state`, `tail`, `head` and the sequence counter are spread across padded superclasses to avoid false sharing.
 
-## Configuration
+See the comments in `Combiner.java` for the full walkthrough.
 
-```java
-Combiner<PriorityQueue<Integer>> combiner = Combiner.builder(new PriorityQueue<Integer>())
-        .maxCombiningOperations(100) // max ops a lock holder serves per pass (default 100)
-        .exposeMetrics()             // off by default
-        .build();
+# Features #
+* `apply(fn)` and `accept(consumer)`, plus `BiFunction` / `BiConsumer` variants that take an argument.
+* Configurable max operations per combining pass.
+* Exceptions thrown by an operation are rethrown in the submitting thread as `CombiningException`.
+* Waiting is uninterruptible. Interrupts are deferred and the status is restored on return.
+* Works with virtual threads.
+
+# Status #
+* Early. Checked with [Lincheck](https://github.com/JetBrains/lincheck) (model checking and stress tests).
+* Requires Java 21.
+
+## Maven ##
+Not published yet.
+
+```
+<!-- TODO: fill in once published -->
+<dependency>
+  <groupId>io.github.kusoroadeolu</groupId>
+  <artifactId>fose-core</artifactId>
+  <version>TODO</version>
+</dependency>
 ```
 
-With metrics enabled, `combiner.metrics()` returns a `CombinerMetrics`:
+# Performance #
+Benchmarks are written with JMH and compare `Combiner` against a non-fair `ReentrantLock` guarding the same data. Each operation is followed by a fixed amount of busy work outside the lock (`Blackhole.consumeCPU(100)`). Results are sampled latency per operation in nanoseconds, across 1 up to 2x core count threads.
 
-| Field | Meaning |
-|---|---|
-| `totalCombinedOperations` | operations applied on behalf of other threads |
-| `totalPasses` | times a lock holder walked the publication queue |
-| `combiningPasses` | passes that applied at least one other thread's op |
-| `combinedOperationsPerPass` | `totalCombinedOperations / totalPasses` |
+Two workloads:
 
-`resetMetrics()` zeroes them. If metrics aren't enabled, `metrics()` returns all zeroes.
+* **Cache line:** each operation writes to 5 counters, each on its own cache line. This is the best case for combining, since a plain lock drags all five lines across cores on every handoff.
+* **Heap hold:** a 65,536-element binary min-heap (512 KB). Each operation pops the min and reinserts `min + random delta`. A larger working set, and operations that return a value.
 
-## Benchmarks
+Machine: Intel i5 (4 cores / 8 logical CPUs), Windows, JDK 21.
 
-These benchmarks are built using JMH compared against a `StampedLock` write lock guarding the same data. 
-Numbers are average latency per thread measured in nanoseconds
+Mean latency per operation in nanoseconds (lower is better). Speedup is `ReentrantLock / Combiner`.
 
-These results were gotten on a 4 core Intel i5, 8 CPUs, 16 GB RAM on a Windows 11 OS. 
-Note that rows past 8 threads are oversubscribed.
+**Cache line**
 
-### Cache line benchmark
+| Threads | ReentrantLock | Combiner | Speedup |
+|---|---|---|---|
+| 1  | 260.8   | 273.5   | 0.95x |
+| 2  | 303.6   | 394.0   | 0.77x |
+| 4  | 998.5   | 655.7   | 1.52x |
+| 6  | 1,454.8 | 797.1   | 1.83x |
+| 8  | 1,893.8 | 967.9   | 1.96x |
+| 16 | 3,514.5 | 3,399.9 | 1.03x |
 
-Each operation updates 5 counters spread over separate cache lines, then does ~1000 units of work after the operation.
+**Heap hold**
 
-| Threads | `add` baseline | `add` combined | Diff | `fetchAdd` diff |
-|---|---|---|---|---|
-| 1 | 1631.7 | 1623.4 | -0.5% | +0.3% |
-| 2 | 1730.7 | 1753.0 | +1.3% | -3.4% |
-| 4 | 2114.1 | 1879.3 | -11.1% | -18.4% |
-| 8 | 3480.2 | 2168.8 | -37.7% | -54.2% |
-| 16 | 8215.0 | 4340.7 | -47.2% | -54.3% |
+| Threads | ReentrantLock | Combiner | Speedup |
+|---|---|---|---|
+| 1  | 294.6   | 308.3   | 0.96x |
+| 2  | 897.5   | 588.6   | 1.52x |
+| 4  | 2,113.7 | 968.3   | 2.18x |
+| 6  | 3,015.9 | 1,436.9 | 2.10x |
+| 8  | 4,044.8 | 2,507.7 | 1.61x |
+| 16 | 7,921.7 | 4,569.3 | 1.73x |
 
-### Heap benchmark
-
-Each operation removes the min of a 65,536-element binary heap and reinserts a new number 
-then does either 0 or 500 units of work after the operations
-
-| Threads | work=0 diff | work=500 diff |
-|---|---|---|
-| 1 | -7.5% | -8.0% |
-| 2 | -37.4% | -10.2% |
-| 4 | -28.2% | -60.5% |
-| 8 | -12.5% | -70.2% |
-| 16 | -9.9% | -69.5% |
-
-## Building and running
+## Building and running ##
 
 ```
 mvn clean package
 java -jar fose-jmh/target/benchmark.jar
 ```
 
-This runs both benchmarks across a thread sweep (1 up to 2x your core count) and writes `jmh-threads-<n>.json` for each.
+This runs the benchmarks across the thread sweep and writes `jmh-threads-<n>.json` for each.
 
-Tests live in `fose-core` and use [Lincheck](https://github.com/JetBrains/lincheck):
+Tests live in `fose-core`:
 
 ```
 mvn test
 ```
 
-## Modules
+## Modules ##
 
 | Module | Contents |
 |---|---|
 | `fose-core` | `Combiner` and its internals |
 | `fose-jmh` | JMH benchmarks |
 
-## License
+# References #
+* Hendler, Incze, Shavit, Tzafrir. [Flat Combining and the Synchronization-Parallelism Tradeoff](https://doi.org/10.1145/1810479.1810540). SPAA 2010.
+* Fatourou, Kallimanis. Revisiting the combining synchronization technique. PPoPP 2012.
+
+# License #
 MIT
