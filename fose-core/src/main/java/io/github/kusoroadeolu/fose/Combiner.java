@@ -207,8 +207,8 @@ public class Combiner<E> extends CombinerPad4<E> {
     static final int SPINS = 1 << 10;
 
     /**
-    * Max number of spins a previously parked waiter can exhaust before reparking
-    * */
+     * Max number of spins a previously parked waiter can exhaust before reparking
+     * */
     static final int POST_PARK_SPINS = 1 << 7;
 
     final int spins;
