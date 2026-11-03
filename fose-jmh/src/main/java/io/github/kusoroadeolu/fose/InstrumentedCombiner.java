@@ -16,7 +16,7 @@ public class InstrumentedCombiner<E> extends Combiner<E> {
 
     //Stuff for instrumenting benchmarks
     public CombinerMetrics metrics() {
-        while (!acquire()) Thread.onSpinWait();
+        while (!tryAcquire()) Thread.onSpinWait();
         try {
             return new CombinerMetrics(_total_ops, _passes, _combined, _passes == 0 ? 0 : (double) _total_ops / _passes);
         }finally {
@@ -25,7 +25,7 @@ public class InstrumentedCombiner<E> extends Combiner<E> {
     }
 
     public void resetMetrics() {
-        while (!acquire()) Thread.onSpinWait();
+        while (!tryAcquire()) Thread.onSpinWait();
         try {
             _total_ops = 0;
             _passes = 0;

@@ -20,23 +20,12 @@ class ThreadSafePriorityQueue<E> {
 }
 ```
 
-# Design #
-* A lock guards the shared object. A thread that wins the lock runs its own operation, then serves the queue.
-* A thread that loses enqueues a node holding its operation (a CAS on the queue tail), then waits for a result.
-* The lock holder (the combiner) walks the queue, applies each operation, and publishes the result on the node.
-* A combining pass is capped at `maxOps` (default 25) so one thread can't get stuck serving others forever.
-* Waiters near the head of the queue spin briefly, then park. Waiters further back, and virtual threads, park immediately.
-* Parked threads are signalled with a Dekker-style handshake (similar to AQS), so wakeups aren't lost.
-* `state`, `tail`, `head` and the sequence counter are spread across padded superclasses to avoid false sharing.
-
-See the comments in `Combiner.java` for a more detailed explanation.
-
 # Features #
 * `apply(fn)` and `accept(consumer)`, plus `BiFunction` / `BiConsumer` variants that take an argument.
 * Configurable max operations per combining pass.
 * Exceptions thrown by an operation are rethrown in the submitting thread as `CombiningException`.
 * Waiting is uninterruptible. Interrupts are deferred and the status is restored on return.
-* Works with virtual threads.
+
 
 # Status #
 * Early. Checked with [Lincheck](https://github.com/JetBrains/lincheck) (model checking and stress tests).

@@ -1,6 +1,8 @@
 package io.github.kusoroadeolu.fose;
 
 
+import org.openjdk.jol.info.ClassLayout;
+
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.util.Objects;
@@ -37,42 +39,49 @@ class CombinerPad2<E> extends CombinerWaiterField<E> {
 
 class CombinerFields<E> extends CombinerPad2<E> {
     volatile Node<E> head;
-    final E item;
 
     //metrics
     long _combined;
     long _passes;
     long _total_ops;
-
-    public CombinerFields(E item) {
-        this.item = item;
-    }
 }
 
 class CombinerPad3<E> extends CombinerFields<E> {
     long a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16;
-
-
-    public CombinerPad3(E item) {
-        super(item);
-    }
 }
 
 class CombinerSequenceField<E> extends CombinerPad3<E> {
     long currSeq;
-
-    public CombinerSequenceField(E item) {
-        super(item);
-    }
 }
 
 
 class CombinerPad4<E> extends CombinerSequenceField<E> {
     long a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16;
+}
 
+class CombinerMiscFields<E> extends CombinerPad4<E> {
+    final int spins;
+    final int postParkSpins;
+    final boolean exposeMetrics;
+    final int maxOperationsPerPass;
+    final E item;
 
-    public CombinerPad4(E item) {
-        super(item);
+    CombinerMiscFields(E item, int spins, int postParkSpins, boolean exposeMetrics, int maxOperationsPerPass) {
+        this.item = item;
+        this.spins = spins;
+        this.postParkSpins = postParkSpins;
+        this.exposeMetrics = exposeMetrics;
+        if (maxOperationsPerPass < 1) throw new IllegalArgumentException("maxOperationsPerPass must be >= 1, got " + maxOperationsPerPass);
+        this.maxOperationsPerPass = maxOperationsPerPass;
+    }
+}
+
+class CombinerPad5<E> extends CombinerMiscFields<E> {
+    long a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16;
+
+    CombinerPad5(E item, int spins, int postParkSpins, boolean exposeMetrics, int maxOperationsPerPass) {
+
+        super(item, spins, postParkSpins, exposeMetrics, maxOperationsPerPass);
     }
 }
 
@@ -124,7 +133,7 @@ class CombinerPad4<E> extends CombinerSequenceField<E> {
  * @author kusoroadeolu
  */
 @SuppressWarnings("unchecked")
-public class Combiner<E> extends CombinerPad4<E> {
+public class Combiner<E> extends CombinerPad5<E> {
 
 
     /*
@@ -211,11 +220,6 @@ public class Combiner<E> extends CombinerPad4<E> {
      * */
     static final int POST_PARK_SPINS = 1 << 7;
 
-    final int spins;
-    final int postParkSpins;
-    final boolean exposeMetrics;
-    final int maxOperationsPerPass;
-
     //Public constructors
     public Combiner(E item) {
         this(item, MAX_OPERATIONS_PER_PASS, false);
@@ -233,12 +237,7 @@ public class Combiner<E> extends CombinerPad4<E> {
 
     // For tests
     Combiner(E item, int maxOperationsPerPass, boolean exposeMetrics, int spins, int postParkSpins) {
-        super(Objects.requireNonNull(item));
-        this.spins = spins;
-        this.postParkSpins = postParkSpins;
-        this.exposeMetrics = exposeMetrics;
-        if (maxOperationsPerPass < 1) throw new IllegalArgumentException("maxOperationsPerPass must be >= 1, got " + maxOperationsPerPass);
-        this.maxOperationsPerPass = maxOperationsPerPass;
+        super(Objects.requireNonNull(item), spins, postParkSpins, exposeMetrics, maxOperationsPerPass);
         head = tail = new Node<>(-1, null, null);
     }
 
@@ -295,7 +294,7 @@ public class Combiner<E> extends CombinerPad4<E> {
     //Internals & Helpers
     private <R> R submit(int kind, Object op, Object arg) {
         Objects.requireNonNull(op);
-        if (acquire()) return combine(kind, op, arg);
+        if (weakTryAcquire()) return combine(kind, op, arg); //we dont need a strong TTAS here
         return tryCombining(kind, op, arg);
     }
 
@@ -425,17 +424,15 @@ public class Combiner<E> extends CombinerPad4<E> {
 
         try {
             boolean first = false;
-            long seenSeq;
             long remSpins = spins;
-            boolean spin = false;
-            int status;
+            boolean spinning = false;
 
 
             for (;;) {
                 if (prev != null && prev.next == null) break;
 
                 if (first || prev == null || (first = (prev == head))) {
-                    if (acquire()) {
+                    if (tryAcquire()) {
                         if (first) return combineEnqueued(prev, node);
                         else return combine(kind, op, arg);
                     }
@@ -456,32 +453,23 @@ public class Combiner<E> extends CombinerPad4<E> {
 
                     prev = t;
                     prev.next = node;
-                } else if (spin && remSpins > 0) {
+                } else if (spinning && remSpins > 0) {
                     --remSpins;
                     Thread.onSpinWait();
-                } else if ((status = node.status) == 0) {
-                    int s;
+                } else if (node.status == 0) {
 
-                    seenSeq = currSeq();
-                    node.status = s = !w.isVirtual() && shouldSpin(node, seenSeq) ?
-                            Node.SPINNING : Node.PARKING;
+                    if (remSpins > 0 && !w.isVirtual() && shouldSpin(node, currSeq())) {
+                        spinning = true;
+                    } else {
+                        spinning = false;
+                        node.status = PARKING;
+                    }
 
-                    if (s == Node.SPINNING && remSpins <= 0)
-                        remSpins = postParkSpins;
-                    //try to spin briefly if we've exhausted
-                    //our spin budget but are near the head of the queue
-                    //usually, a thread takes this branch after it's been unparked and was previously a spinner
-
-
-                    spin = (s == SPINNING);
-
-                } else if (status == Node.SPINNING) {
-                    node.status = Node.PARKING; // budget spent, park
-                    spin = false;
                 } else {
                     LockSupport.park(this);
                     if (!wasInterrupted && Thread.interrupted()) wasInterrupted = true;
                     node.clearStatus();                    // clear status & loop top rechecked prev.next/head first
+                    if (remSpins <= 0) remSpins = spins;
                 }
 
             }
@@ -517,8 +505,17 @@ public class Combiner<E> extends CombinerPad4<E> {
         node.arg = null;
     }
 
-    boolean acquire() {
+    boolean tryAcquire() {
         if (state == FREE && (long) STATE.getAndAdd(this, 1) == FREE) {
+            setExclusiveOwnerThread(Thread.currentThread());
+            return true;
+        }
+
+        return false;
+    }
+
+    boolean weakTryAcquire() {
+        if ((int) STATE.getOpaque(this) == FREE && (long) STATE.getAndAdd(this, 1) == FREE) {
             setExclusiveOwnerThread(Thread.currentThread());
             return true;
         }
@@ -661,4 +658,7 @@ public class Combiner<E> extends CombinerPad4<E> {
         }
     }
 
+    public static void main(String[] args) {
+        System.out.println(ClassLayout.parseClass(Combiner.class).toPrintable());
+    }
 }
