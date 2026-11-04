@@ -33,7 +33,6 @@ class CombinerWaiterField<E> extends CombinerPad1 {
 }
 
 class CombinerPad2<E> extends CombinerWaiterField<E> {
-    byte f0, f1, f2, f3; //extra padding to fill in the 4 byte gap
     long a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16;
 }
 
@@ -56,6 +55,7 @@ class CombinerSequenceField<E> extends CombinerPad3<E> {
 
 
 class CombinerPad4<E> extends CombinerSequenceField<E> {
+    byte f0, f1, f2, f3; //extra padding to fill in the 4 byte gap
     long a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16;
 }
 
@@ -389,7 +389,7 @@ public class Combiner<E> extends CombinerPad5<E> {
                     waiters[waiting++] = curr;
                 }
 
-                updateSeq(curr.seq); //curr.seq made visible by read of pred.next, a weak write is also alright here
+                updateSeq(curr.seq); //plain read of curr.seq made visible by read of pred.next, a weak write is also alright here
 
                 ops++;
                 prev = curr;
@@ -656,9 +656,5 @@ public class Combiner<E> extends CombinerPad5<E> {
         }catch (NoSuchFieldException | IllegalAccessException e) {
             throw new ExceptionInInitializerError(e);
         }
-    }
-
-    public static void main(String[] args) {
-        System.out.println(ClassLayout.parseClass(Combiner.class).toPrintable());
     }
 }
