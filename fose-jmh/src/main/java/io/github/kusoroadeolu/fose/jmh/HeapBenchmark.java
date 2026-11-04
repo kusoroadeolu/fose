@@ -152,18 +152,18 @@ public class HeapBenchmark {
 
 
 
-//    @Benchmark
-//    public Object baselineHold(LockState s) {
-//        Object r;
-//        s.lock.lock();
-//        try {
-//            r = s.baseData.hold();
-//        } finally {
-//            s.lock.unlock();
-//        }
-//        Blackhole.consumeCPU(s.work);
-//        return r;
-//    }
+    @Benchmark
+    public Object baselineHold(LockState s) {
+        Object r;
+        s.lock.lock();
+        try {
+            r = s.baseData.hold();
+        } finally {
+            s.lock.unlock();
+        }
+        Blackhole.consumeCPU(s.work);
+        return r;
+    }
 
     @Benchmark
     public Object combinedHold(CombinerState s, CombinerState.SharedMetrics sc) {

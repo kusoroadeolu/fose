@@ -13,7 +13,7 @@ import java.lang.invoke.VarHandle;
 // per spin. This does come at the cost of an extra byte per node allocation
 
 class Node<E> {
-    final int kind;
+    final byte kind;
     Object arg;
     Object op;
 
@@ -27,8 +27,8 @@ class Node<E> {
     volatile Node<E> next;
     volatile byte verdict;
 
-    static final int WAITING = 1; //indicates a thread is about to park
-    static final int FN = 1, CONSUMER = 2, BI_FN = 3, BI_CONSUMER = 4;
+    static final int WAITING = 1;
+    static final byte FN = 1, CONSUMER = 2, BI_FN = 3, BI_CONSUMER = 4;
     static final byte SERVED = 1, IS_COMBINER = 2;
 
     //We'll do something quite similar to the waiting scheme in aqs to support unbounded parks
@@ -39,13 +39,13 @@ class Node<E> {
     * in between these, after we've enqueued, we'll check if our operation has been applied so we don't wait unnecessarily
     * */
 
-    public Node(int kind, Object op, Object arg) {
+    public Node(byte kind, Object op, Object arg) {
         this.kind = kind;
         this.op = op;
         this.arg = arg;
     }
 
-    public Node(int kind, Object op, Object arg, byte verdict) {
+    public Node(byte kind, Object op, Object arg, byte verdict) {
         this.kind = kind;
         this.op = op;
         this.arg = arg;
@@ -60,7 +60,7 @@ class Node<E> {
         STATUS.getAndBitwiseAnd(this, ~v);
     }
 
-    void detachNext() {
+    void detach() {
         NEXT.set(this, null);
     }
 
@@ -76,5 +76,4 @@ class Node<E> {
             throw new RuntimeException(e);
         }
     }
-
 }

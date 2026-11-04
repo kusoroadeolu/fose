@@ -238,7 +238,7 @@ public class Combiner<E> extends CombinerPad5<E> {
     // For tests
     Combiner(E item, int maxOperationsPerPass, boolean exposeMetrics, int spins, int postParkSpins) {
         super(Objects.requireNonNull(item), spins, postParkSpins, exposeMetrics, maxOperationsPerPass);
-        head = tail = new Node<>(-1, null, null, IS_COMBINER);
+        head = tail = new Node<>((byte) -1, null, null, IS_COMBINER);
     }
 
     // Public APIs
@@ -292,13 +292,13 @@ public class Combiner<E> extends CombinerPad5<E> {
     }
 
     //Internals & Helpers
-    private <R> R submit(int kind, Object op, Object arg) {
+    private <R> R submit(byte kind, Object op, Object arg) {
         Objects.requireNonNull(op);
         if (weakTryAcquire()) return combine(kind, op, arg); //we dont need a strong TTAS here
         return tryCombining(kind, op, arg);
     }
 
-    private  <R> R combine(int kind, Object op, Object arg) {
+    private  <R> R combine(byte kind, Object op, Object arg) {
         final E item = this.item;
         Object result;
 
@@ -344,7 +344,6 @@ public class Combiner<E> extends CombinerPad5<E> {
             notifyNextWaiter(head);
         }
 
-        prev.detachNext();
         return result(node);
     }
 
@@ -376,21 +375,27 @@ public class Combiner<E> extends CombinerPad5<E> {
         try {
             while (ops < m && (curr = prev.next) != null) {
 
+                long seq = curr.seq;
                 try {
                     curr.result = execute(curr.kind, curr.op, curr.arg, item);
                 } catch (Throwable t) {
                     curr.err = t;
                 }
 
+                prev.detach();
                 prev.verdict = SERVED; //make result visible to waiter
 
                 if (curr.status == WAITING) {
                     if (waiters == null)
-                        waiters = new Node[(int) (maxOperationsPerPass - ops)];
+                        waiters = new Node[(int) (m - ops)];
                     waiters[waiting++] = curr;
                 }
 
-                updateSeq(curr.seq); //plain read of curr.seq made visible by read of pred.next, a weak write is also alright here
+                //I also need to look at this, every spinning waiter try to acquire the cache line this resides in, in shared mode
+                // while the combiner tries to acquire in exclusive mode, this would be an issue?
+                // maybe periodic updates rather than per pass
+
+                 updateSeq(seq); //plain read of curr.seq made visible by read of pred.next, a weak write is also alright here
 
                 ops++;
                 prev = curr;
@@ -398,8 +403,8 @@ public class Combiner<E> extends CombinerPad5<E> {
 
             recordMetrics(ops);
         }finally {
-            head = prev;
             prev.verdict = IS_COMBINER;
+            head = prev;
             release();
 
             //recheck after release to handle the issue of a missed handoff signal
@@ -419,7 +424,7 @@ public class Combiner<E> extends CombinerPad5<E> {
         }
     }
 
-    private  <R> R tryCombining(int kind, Object op, Object arg) {
+    private  <R> R tryCombining(byte kind, Object op, Object arg) {
         boolean wasInterrupted = false;
         Node<E> node = null, prev = null;
         Thread w = null;
@@ -480,7 +485,6 @@ public class Combiner<E> extends CombinerPad5<E> {
             if (wasInterrupted) Thread.currentThread().interrupt();
         }
 
-        prev.detachNext();
         return result(node);
     }
 
