@@ -9,11 +9,18 @@ import org.openjdk.jmh.runner.options.OptionsBuilder;
 
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 
 
+//@Fork(value = 3, jvmArgs = {Args.INITIAL_HEAP_SIZE, Args.MAX_HEAP_SIZE, Args.GC_TYPE, "-XX:+UnlockDiagnosticVMOptions", "-XX:+DebugNonSafepoints"})
+//@Warmup(iterations = 5, time = 1)
+//@Measurement(iterations = 5, time = 1)
+//@BenchmarkMode(Mode.SampleTime)
+//@OutputTimeUnit(TimeUnit.NANOSECONDS)
 @Fork(value = 3, jvmArgs = {Args.INITIAL_HEAP_SIZE, Args.MAX_HEAP_SIZE, Args.GC_TYPE})
 @Warmup(iterations = 5, time = 1)
 @Measurement(iterations = 5, time = 1)
@@ -130,18 +137,17 @@ public class CacheLineBenchmark {
         }
     }
 
-    @Benchmark
-    public void baselineAdd(LockState sc) {
-        sc.lock.lock();
-        try {
-            sc.baseData.add();
-        } finally {
-            sc.lock.unlock();
-        }
-
-        Blackhole.consumeCPU(sc.work);
-    }
+//    @Benchmark
+//    public void baselineAdd(LockState sc) {
+//        sc.lock.lock();
+//        try {
+//            sc.baseData.add();
+//        } finally {
+//            sc.lock.unlock();
+//        }
 //
+//        Blackhole.consumeCPU(sc.work);
+//    }
 
 
     @Benchmark
@@ -169,5 +175,7 @@ public class CacheLineBenchmark {
 
         }
     }
+
+
 }
 

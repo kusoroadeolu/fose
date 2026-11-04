@@ -37,7 +37,7 @@ class CombinerPad2<E> extends CombinerWaiterField<E> {
 }
 
 class CombinerFields<E> extends CombinerPad2<E> {
-    volatile Node<E> head;
+    Node<E> head;
 
     //metrics
     long _combined;
@@ -238,7 +238,7 @@ public class Combiner<E> extends CombinerPad5<E> {
     // For tests
     Combiner(E item, int maxOperationsPerPass, boolean exposeMetrics, int spins, int postParkSpins) {
         super(Objects.requireNonNull(item), spins, postParkSpins, exposeMetrics, maxOperationsPerPass);
-        head = tail = new Node<>(-1, null, null);
+        head = tail = new Node<>(-1, null, null, IS_COMBINER);
     }
 
     // Public APIs
@@ -336,7 +336,7 @@ public class Combiner<E> extends CombinerPad5<E> {
     //of the queue, its op has been applied, and we notify the next waiter
     //otherwise, combine pass
     private  <R> R combineEnqueued(Node<E> prev, Node<E> node) {
-        Node<E> head = getHeadPlain();
+        Node<E> head = this.head;
         if (head == prev) {
             combinePass();
         } else {
@@ -344,12 +344,13 @@ public class Combiner<E> extends CombinerPad5<E> {
             notifyNextWaiter(head);
         }
 
+        prev.detachNext();
         return result(node);
     }
 
     private void notifyNextWaiter(Node<E> prev) {
         Node<E> next = prev.next;
-        Thread w = (next != null && next.status == Node.WAITING) ? next.waiter : null;
+        Thread w = (next != null && next.status == WAITING) ? next.waiter : null;
         if (w != null) {
             next.unsetStatus(WAITING);
             LockSupport.unpark(w);
@@ -364,7 +365,7 @@ public class Combiner<E> extends CombinerPad5<E> {
     // and unpark parked threads we came across during our pass
     private void combinePass() {
         //assert Thread.currentThread() == getOwner();
-        Node<E> prev = getHeadPlain();
+        Node<E> prev = head;
         Node<E> curr;
         final E item = this.item;
         Node<E>[] waiters = null;
@@ -381,9 +382,9 @@ public class Combiner<E> extends CombinerPad5<E> {
                     curr.err = t;
                 }
 
-                prev.next = null; //make result visible to waiter
+                prev.verdict = SERVED; //make result visible to waiter
 
-                if (curr.status == Node.WAITING) {
+                if (curr.status == WAITING) {
                     if (waiters == null)
                         waiters = new Node[(int) (maxOperationsPerPass - ops)];
                     waiters[waiting++] = curr;
@@ -398,6 +399,7 @@ public class Combiner<E> extends CombinerPad5<E> {
             recordMetrics(ops);
         }finally {
             head = prev;
+            prev.verdict = IS_COMBINER;
             release();
 
             //recheck after release to handle the issue of a missed handoff signal
@@ -407,8 +409,8 @@ public class Combiner<E> extends CombinerPad5<E> {
             if (waiters != null) {
                 for (int i = 0; i < waiting; ++i) {
                     Node<E> w = waiters[i];
-                    if (w.status == Node.WAITING) {
-                        w.unsetStatus(Node.WAITING);
+                    if (w.status == WAITING) {
+                        w.unsetStatus(WAITING);
                         LockSupport.unpark(w.waiter);
                     }
                 }
@@ -429,9 +431,10 @@ public class Combiner<E> extends CombinerPad5<E> {
 
 
             for (;;) {
-                if (prev != null && prev.next == null) break;
+                byte verdict = 0;
+                if (prev != null && (verdict = prev.verdict) == SERVED) break;
 
-                if (first || prev == null || (first = (prev == head))) {
+                if (first || prev == null || (first = (verdict == IS_COMBINER))) {
                     if (tryAcquire()) {
                         if (first) return combineEnqueued(prev, node);
                         else return combine(kind, op, arg);
@@ -477,6 +480,7 @@ public class Combiner<E> extends CombinerPad5<E> {
             if (wasInterrupted) Thread.currentThread().interrupt();
         }
 
+        prev.detachNext();
         return result(node);
     }
 
@@ -526,10 +530,6 @@ public class Combiner<E> extends CombinerPad5<E> {
     void release() {
         setExclusiveOwnerThread(null);
         state = 0;
-    }
-
-    private Node<E> getHeadPlain() {
-        return (Node<E>) HEAD.get(this);
     }
 
     private long currSeq() {
@@ -640,7 +640,6 @@ public class Combiner<E> extends CombinerPad5<E> {
     }
 
     static final VarHandle TAIL;
-    static final VarHandle HEAD;
     static final VarHandle STATE;
     static final VarHandle CURR_SEQ;
 
@@ -650,7 +649,6 @@ public class Combiner<E> extends CombinerPad5<E> {
         var lookup = MethodHandles.lookup();
         try {
             CURR_SEQ = lookup.findVarHandle(Combiner.class, "currSeq", long.class);
-            HEAD = lookup.findVarHandle(Combiner.class, "head", Node.class);
             STATE = lookup.findVarHandle(Combiner.class, "state", int.class);
             TAIL = lookup.findVarHandle(Combiner.class, "tail", Node.class);
         }catch (NoSuchFieldException | IllegalAccessException e) {
