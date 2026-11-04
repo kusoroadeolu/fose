@@ -15,9 +15,9 @@ import java.util.function.Function;
 
 @Fork(value = 3, jvmArgs = {Args.INITIAL_HEAP_SIZE, Args.MAX_HEAP_SIZE, Args.GC_TYPE})
 @Warmup(iterations = 5, time = 1)
-@Measurement(iterations = 10, time = 1)
-@BenchmarkMode(Mode.SampleTime)
-@OutputTimeUnit(TimeUnit.NANOSECONDS)
+@Measurement(iterations = 5, time = 1)
+@BenchmarkMode(Mode.Throughput)
+@OutputTimeUnit(TimeUnit.MICROSECONDS)
 public class HeapBenchmark {
 
     static final class HeapData {

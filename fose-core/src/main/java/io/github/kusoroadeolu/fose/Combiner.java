@@ -1,8 +1,6 @@
 package io.github.kusoroadeolu.fose;
 
 
-import org.openjdk.jol.info.ClassLayout;
-
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.util.Objects;
@@ -16,15 +14,16 @@ import java.util.function.Function;
 import static io.github.kusoroadeolu.fose.Node.*;
 
 class CombinerPad0 extends AbstractOwnableSynchronizer {
-    long a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15;
+    long a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16;
 }
 
 class CombinerStateField extends CombinerPad0 {
-    volatile long state = FREE;
-    static final long FREE = 0;
+    volatile int state = FREE;
+    static final int FREE = 0;
 }
 
 class CombinerPad1 extends CombinerStateField {
+    byte b0, b1, b2, b3;
     long a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16;
 }
 
@@ -33,6 +32,7 @@ class CombinerWaiterField<E> extends CombinerPad1 {
 }
 
 class CombinerPad2<E> extends CombinerWaiterField<E> {
+    byte b0, b1, b2, b3;
     long a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16;
 }
 
@@ -349,9 +349,9 @@ public class Combiner<E> extends CombinerPad5<E> {
 
     private void notifyNextWaiter(Node<E> prev) {
         Node<E> next = prev.next;
-        Thread w = (next != null && next.status == Node.PARKING) ? next.waiter : null;
+        Thread w = (next != null && next.status == Node.WAITING) ? next.waiter : null;
         if (w != null) {
-            next.unsetStatus(PARKING);
+            next.unsetStatus(WAITING);
             LockSupport.unpark(w);
         }
     }
@@ -383,7 +383,7 @@ public class Combiner<E> extends CombinerPad5<E> {
 
                 prev.next = null; //make result visible to waiter
 
-                if (curr.status == Node.PARKING) {
+                if (curr.status == Node.WAITING) {
                     if (waiters == null)
                         waiters = new Node[(int) (maxOperationsPerPass - ops)];
                     waiters[waiting++] = curr;
@@ -407,8 +407,8 @@ public class Combiner<E> extends CombinerPad5<E> {
             if (waiters != null) {
                 for (int i = 0; i < waiting; ++i) {
                     Node<E> w = waiters[i];
-                    if (w.status == Node.PARKING) {
-                        w.unsetStatus(Node.PARKING);
+                    if (w.status == Node.WAITING) {
+                        w.unsetStatus(Node.WAITING);
                         LockSupport.unpark(w.waiter);
                     }
                 }
@@ -462,7 +462,7 @@ public class Combiner<E> extends CombinerPad5<E> {
                         spinning = true;
                     } else {
                         spinning = false;
-                        node.status = PARKING;
+                        node.status = WAITING;
                     }
 
                 } else {
@@ -506,7 +506,7 @@ public class Combiner<E> extends CombinerPad5<E> {
     }
 
     boolean tryAcquire() {
-        if (state == FREE && (long) STATE.getAndAdd(this, 1) == FREE) {
+        if (state == FREE && (int) STATE.getAndAdd(this, 1) == FREE) {
             setExclusiveOwnerThread(Thread.currentThread());
             return true;
         }
@@ -515,7 +515,7 @@ public class Combiner<E> extends CombinerPad5<E> {
     }
 
     boolean weakTryAcquire() {
-        if ((int) STATE.getOpaque(this) == FREE && (long) STATE.getAndAdd(this, 1) == FREE) {
+        if ((int) STATE.getOpaque(this) == FREE && (int) STATE.getAndAdd(this, 1) == FREE) {
             setExclusiveOwnerThread(Thread.currentThread());
             return true;
         }
@@ -651,7 +651,7 @@ public class Combiner<E> extends CombinerPad5<E> {
         try {
             CURR_SEQ = lookup.findVarHandle(Combiner.class, "currSeq", long.class);
             HEAD = lookup.findVarHandle(Combiner.class, "head", Node.class);
-            STATE = lookup.findVarHandle(Combiner.class, "state", long.class);
+            STATE = lookup.findVarHandle(Combiner.class, "state", int.class);
             TAIL = lookup.findVarHandle(Combiner.class, "tail", Node.class);
         }catch (NoSuchFieldException | IllegalAccessException e) {
             throw new ExceptionInInitializerError(e);

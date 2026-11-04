@@ -15,7 +15,7 @@ class Node<E> {
     volatile int status;
     volatile Node<E> next;
 
-    static final int PARKING = 1, SPINNING = 2; //indicates a thread is about to park
+    static final int WAITING = 1; //indicates a thread is about to park
     static final int FN = 1, CONSUMER = 2, BI_FN = 3, BI_CONSUMER = 4;
 
 

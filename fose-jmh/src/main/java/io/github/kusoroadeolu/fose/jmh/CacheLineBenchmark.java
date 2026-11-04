@@ -16,7 +16,7 @@ import java.util.function.Consumer;
 
 @Fork(value = 3, jvmArgs = {Args.INITIAL_HEAP_SIZE, Args.MAX_HEAP_SIZE, Args.GC_TYPE})
 @Warmup(iterations = 5, time = 1)
-@Measurement(iterations = 10, time = 1)
+@Measurement(iterations = 5, time = 1)
 @BenchmarkMode(Mode.Throughput)
 @OutputTimeUnit(TimeUnit.MICROSECONDS)
 public class CacheLineBenchmark {
@@ -141,7 +141,7 @@ public class CacheLineBenchmark {
 
         Blackhole.consumeCPU(sc.work);
     }
-
+//
 
 
     @Benchmark
