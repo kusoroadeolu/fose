@@ -56,8 +56,8 @@ class Node<E> {
         STATUS.setOpaque(this, 0);
     }
 
-    public void unsetStatus(int v) {
-        STATUS.getAndBitwiseAnd(this, ~v);
+    void unsetWaitingStatus() {
+        STATUS.getAndBitwiseAnd(this, ~Node.WAITING);
     }
 
     void detach() {

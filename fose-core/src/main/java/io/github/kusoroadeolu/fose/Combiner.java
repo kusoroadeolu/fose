@@ -351,7 +351,7 @@ public class Combiner<E> extends CombinerPad5<E> {
         Node<E> next = prev.next;
         Thread w = (next != null && next.status == WAITING) ? next.waiter : null;
         if (w != null) {
-            next.unsetStatus(WAITING);
+            next.unsetWaitingStatus();
             LockSupport.unpark(w);
         }
     }
@@ -391,10 +391,6 @@ public class Combiner<E> extends CombinerPad5<E> {
                     waiters[waiting++] = curr;
                 }
 
-                //I also need to look at this, every spinning waiter try to acquire the cache line this resides in, in shared mode
-                // while the combiner tries to acquire in exclusive mode, this would be an issue?
-                // maybe periodic updates rather than per pass
-
                  updateSeq(seq); //plain read of curr.seq made visible by read of pred.next, a weak write is also alright here
 
                 ops++;
@@ -415,7 +411,7 @@ public class Combiner<E> extends CombinerPad5<E> {
                 for (int i = 0; i < waiting; ++i) {
                     Node<E> w = waiters[i];
                     if (w.status == WAITING) {
-                        w.unsetStatus(WAITING);
+                        w.unsetWaitingStatus();
                         LockSupport.unpark(w.waiter);
                     }
                 }
@@ -477,7 +473,7 @@ public class Combiner<E> extends CombinerPad5<E> {
                     LockSupport.park(this);
                     if (!wasInterrupted && Thread.interrupted()) wasInterrupted = true;
                     node.clearStatus();                    // clear status & loop top rechecked prev.next/head first
-                    if (remSpins <= 0) remSpins = spins;
+                    if (remSpins <= 0) remSpins = postParkSpins;
                 }
 
             }
@@ -625,6 +621,8 @@ public class Combiner<E> extends CombinerPad5<E> {
     public boolean hasQueuedThreads() {
         return getQueueLength() > 0;
     }
+
+
     @Override
     public String toString() {
         Thread o = getOwner();

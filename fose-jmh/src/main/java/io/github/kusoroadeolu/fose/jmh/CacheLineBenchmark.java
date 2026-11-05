@@ -162,8 +162,8 @@ public class CacheLineBenchmark {
                     new OptionsBuilder()
                     .include(CacheLineBenchmark.class.getSimpleName())
                     .threads(t)
-                  //  .resultFormat(ResultFormatType.JSON) //need this for my formatter, can remove later
-                  //  .result(resultFile)
+                    .resultFormat(ResultFormatType.JSON) //need this for my formatter, can remove later
+                    .result(resultFile)
                   //          .addProfiler(JavaFlightRecorderProfiler.class, "dir=C:\\jfr-fc")
                     .build())
                     .run();
