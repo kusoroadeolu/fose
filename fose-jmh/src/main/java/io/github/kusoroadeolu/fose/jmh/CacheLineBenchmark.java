@@ -9,16 +9,19 @@ import org.openjdk.jmh.runner.options.OptionsBuilder;
 
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 
 
+
 @Fork(value = 3, jvmArgs = {Args.INITIAL_HEAP_SIZE, Args.MAX_HEAP_SIZE, Args.GC_TYPE})
 @Warmup(iterations = 5, time = 1)
 @Measurement(iterations = 5, time = 1)
-@BenchmarkMode(Mode.Throughput)
-@OutputTimeUnit(TimeUnit.MICROSECONDS)
+@BenchmarkMode(Mode.SampleTime)
+@OutputTimeUnit(TimeUnit.NANOSECONDS)
 public class CacheLineBenchmark {
 
     //More or less the structure we're working on
@@ -141,7 +144,6 @@ public class CacheLineBenchmark {
 
         Blackhole.consumeCPU(sc.work);
     }
-//
 
 
     @Benchmark
@@ -153,7 +155,7 @@ public class CacheLineBenchmark {
 
     public static void main(String[] args) throws Exception {
         int cores = Runtime.getRuntime().availableProcessors();
-        for (int t : Args.THREAD_SWEEP) {
+        for (int t : new int[]{8}) {
             if (t > cores * 2) break;
             String resultFile = "jmh-threads-" + t + ".json";
             new Runner(
@@ -169,5 +171,7 @@ public class CacheLineBenchmark {
 
         }
     }
+
+
 }
 
