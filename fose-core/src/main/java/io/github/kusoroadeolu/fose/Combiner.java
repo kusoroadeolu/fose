@@ -1,6 +1,8 @@
 package io.github.kusoroadeolu.fose;
 
 
+import org.openjdk.jol.info.ClassLayout;
+
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.util.Objects;
@@ -28,7 +30,7 @@ class CombinerPad1 extends CombinerStateField {
 }
 
 class CombinerWaiterField<E> extends CombinerPad1 {
-    volatile Node<E> tail;
+    volatile Node tail;
 }
 
 class CombinerPad2<E> extends CombinerWaiterField<E> {
@@ -37,7 +39,7 @@ class CombinerPad2<E> extends CombinerWaiterField<E> {
 }
 
 class CombinerFields<E> extends CombinerPad2<E> {
-    Node<E> head;
+    Node head;
 
     //metrics
     long _combined;
@@ -46,20 +48,11 @@ class CombinerFields<E> extends CombinerPad2<E> {
 }
 
 class CombinerPad3<E> extends CombinerFields<E> {
+    byte b0, b1, b2, b3;
     long a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16;
 }
 
-class CombinerSequenceField<E> extends CombinerPad3<E> {
-    long currSeq;
-}
-
-
-class CombinerPad4<E> extends CombinerSequenceField<E> {
-    byte f0, f1, f2, f3; //extra padding to fill in the 4 byte gap
-    long a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16;
-}
-
-class CombinerMiscFields<E> extends CombinerPad4<E> {
+class CombinerMiscFields<E> extends CombinerPad3<E> {
     final int spins;
     final int postParkSpins;
     final boolean exposeMetrics;
@@ -213,12 +206,12 @@ public class Combiner<E> extends CombinerPad5<E> {
     /**
      * Max number of spins a spinning waiter can exhaust before parking
      * */
-    static final int SPINS = 1 << 10;
+    static final int SPINS = 1 << 7;
 
     /**
      * Max number of spins a previously parked waiter can exhaust before reparking
      * */
-    static final int POST_PARK_SPINS = 1 << 7;
+    static final int POST_PARK_SPINS = 1 << 5;
 
     //Public constructors
     public Combiner(E item) {
@@ -238,7 +231,7 @@ public class Combiner<E> extends CombinerPad5<E> {
     // For tests
     Combiner(E item, int maxOperationsPerPass, boolean exposeMetrics, int spins, int postParkSpins) {
         super(Objects.requireNonNull(item), spins, postParkSpins, exposeMetrics, maxOperationsPerPass);
-        head = tail = new Node<>((byte) -1, null, null, IS_COMBINER);
+        head = tail = new Node(IS_COMBINER);
     }
 
     // Public APIs
@@ -335,23 +328,23 @@ public class Combiner<E> extends CombinerPad5<E> {
     //Tries to run its own op, if it is not at the head
     //of the queue, its op has been applied, and we notify the next waiter
     //otherwise, combine pass
-    private  <R> R combineEnqueued(Node<E> prev, Node<E> node) {
-        Node<E> head = this.head;
-        if (head == prev) {
+    private  <R> R combineEnqueued(Node node) {
+        Node head = this.head;
+        if (head == node) {
             combinePass();
         } else {
             release();
             notifyNextWaiter(head);
         }
 
-        return result(node, node.getSignalPlain());
+        return result(node);
     }
 
-    private void notifyNextWaiter(Node<E> prev) {
-        Node<E> next = prev.next;
-        Thread w = (next != null && next.status == WAITING) ? next.waiter : null;
+    private void notifyNextWaiter(Node node) {
+        Object op = node.op;
+        Thread w = (op != null && node.status == WAITING) ? node.waiter : null;
         if (w != null) {
-            next.unsetWaitingStatus();
+            node.unsetWaitingStatus();
             LockSupport.unpark(w);
         }
     }
@@ -364,118 +357,111 @@ public class Combiner<E> extends CombinerPad5<E> {
     // and unpark parked threads we came across during our pass
     private void combinePass() {
         //assert Thread.currentThread() == getOwner();
-        Node<E> prev = head;
-        Node<E> curr;
+        Node node = head;
         final E item = this.item;
-        Node<E>[] waiters = null;
+        Node[] waiters = null;
         int ops = 0;
         int waiting = 0;
         int m = maxOperationsPerPass;
+        Object op;
 
         try {
-            while (ops < m && (curr = prev.next) != null) {
+            while (ops < m && (op = node.getOpAcquire()) != null) {
 
-                long seq = curr.seq;
-                prev.detach();
+                Node n = node.next; //made visible my acquire read of node.op
+
                 try {
-                    curr.result = execute(curr.kind, curr.op, curr.arg, item);
-                    prev.signal = SERVED; //make result visible to waiter
+                    node.result = execute(node.kind, op, node.arg, item);
+                    node.signal = SERVED; //make result visible to waiter
                 } catch (Throwable t) {
-                    curr.result = t;
-                    prev.signal = ERR_OCCURRED; //make result visible to waiter
+                    node.result = t;
+                    node.signal = ERR_OCCURRED; //make result visible to waiter
 
                 }
 
-                prev.detach();
-
-                if (curr.status == WAITING) {
+                if (node.status == WAITING) {
                     if (waiters == null)
                         waiters = new Node[(int) (m - ops)];
-                    waiters[waiting++] = curr;
+                    waiters[waiting++] = node;
                 }
 
-                 updateSeq(seq); //plain read of curr.seq made visible by read of pred.next, a weak write is also alright here
-
                 ops++;
-                prev = curr;
+                node = n;
             }
 
             recordMetrics(ops);
         }finally {
-            prev.signal = IS_COMBINER;
-            head = prev;
+            if (node.getSignalPlain() != IS_COMBINER) node.signal = IS_COMBINER;
+            head = node;
             release();
 
             //recheck after release to handle the issue of a missed handoff signal
             //if the waiter is unavailable after setting head = prev, the handoff signal cannot be lost
-            notifyNextWaiter(prev);
+            notifyNextWaiter(node);
 
             if (waiters != null) {
                 for (int i = 0; i < waiting; ++i) {
-                    Node<E> w = waiters[i];
+                    Node w = waiters[i];
                     if (w.status == WAITING) {
                         w.unsetWaitingStatus();
                         LockSupport.unpark(w.waiter);
                     }
                 }
             }
-
         }
     }
 
     private  <R> R tryCombining(byte kind, Object op, Object arg) {
         boolean wasInterrupted = false;
-        Node<E> node = null, prev = null;
-        Thread w = null;
+        Node succ = null, node = null;
+        Thread w = Thread.currentThread();
         int signal = 0;
 
         try {
-            boolean first = false;
+            boolean canCombine = false;
             long spins = this.spins;
             boolean spinning = false;
 
             for (;;) {
 
-                if (prev != null && ((signal = prev.signal) & 1) == 1) break;
+                if (node != null && ((signal = node.signal) & 1) == 1) break;
 
-                if (first || prev == null || (first = (signal == IS_COMBINER))) {
+                if (canCombine || succ == null || (canCombine = (signal == IS_COMBINER))) {
                     if (tryAcquire()) {
-                        if (first) return combineEnqueued(prev, node);
+                        if (canCombine) return combineEnqueued(node);
                         else return combine(kind, op, arg);
                     }
                 }
 
-                if (node == null) {
-                    node = new Node<>(kind, op, arg);
-                } else if (prev == null) {
-                    var t = tail;
-                    long seq = t.seq;
-                    node.seq = seq + 1;
-                    node.waiter = w = Thread.currentThread();
+                if (succ == null) {
+                    succ = new Node();
+                } else if (node == null) {
 
-                    if (!casTail(t, node)) {
-                        node.waiter = null;
-                        continue;
-                    }
+                    node = xchgTail(succ);
 
-                    prev = t;
-                    prev.next = node;
+                    node.kind = kind;
+                    node.arg = arg;
+                    node.next = succ;
+
+                    node.op = op; //make op and earlier writes visible
+
                 } else if (spinning && spins > 0) {
                     --spins;
                     Thread.onSpinWait();
                 } else if (node.status == 0) {
 
-                    if (spins > 0 && !w.isVirtual() && shouldSpin(node, currSeq())) {
+                    if (spins > 0 && !w.isVirtual()) {
                         spinning = true;
                     } else {
-                        spinning = false;
+                        node.waiter = w;
                         node.status = WAITING;
+                        spinning = false;
                     }
 
                 } else {
                     LockSupport.park(this);
                     if (!wasInterrupted && Thread.interrupted()) wasInterrupted = true;
-                    node.clearStatus();                    // clear status & loop top rechecked prev.next/head first
+                    node.clearStatus();                    // clear status & loop top rechecked prev.signal first
                     if (spins <= 0) spins = postParkSpins;
                 }
 
@@ -484,16 +470,11 @@ public class Combiner<E> extends CombinerPad5<E> {
             if (wasInterrupted) Thread.currentThread().interrupt();
         }
 
-        return result(node, signal);
+        return result(node);
     }
 
-    private boolean shouldSpin(Node<E> node, long seenSeq) {
-        long s = node.seq;
-        return (s - seenSeq) <= MAX_SPINNING_WAITERS;
-    }
-
-    private <R> R result(Node<E> node, int signal) {
-        if (signal == ERR_OCCURRED) {
+    private <R> R result(Node node) {
+        if (node.getSignalPlain() == ERR_OCCURRED) {
             Throwable t = (Throwable) node.result;
             cleanNode(node);
             throw new CombiningException(t);
@@ -504,11 +485,12 @@ public class Combiner<E> extends CombinerPad5<E> {
         }
     }
 
-    private void cleanNode(Node<E> node) {
-        node.op = null;
+    private void cleanNode(Node node) {
+        node.clearOp();
         node.waiter = null;
         node.result = null;
         node.arg = null;
+        node.next = null;
     }
 
     boolean tryAcquire() {
@@ -534,16 +516,8 @@ public class Combiner<E> extends CombinerPad5<E> {
         state = 0;
     }
 
-    private long currSeq() {
-        return (long) CURR_SEQ.getOpaque(this);
-    }
-
-    private void updateSeq(long seq) {
-        CURR_SEQ.setOpaque(this, seq);
-    }
-
-    private boolean casTail(Node<E> from, Node<E> to) {
-        return tail == from && TAIL.compareAndSet(this, from, to);
+    private Node xchgTail(Node node) {
+        return (Node) TAIL.getAndSet(this, node);
     }
 
 
@@ -596,34 +570,6 @@ public class Combiner<E> extends CombinerPad5<E> {
         return state == FREE ? null : getExclusiveOwnerThread();
     }
 
-    /**
-     * Returns an estimate of the number of operations waiting to be applied.
-     *
-     * <p>The value is computed from internal sequence numbers read without
-     * synchronization, so it is only a snapshot of a moving target and may be
-     * slightly off while threads are enqueuing or being served. It is designed
-     * for monitoring and diagnostics, not for synchronization control.
-     *
-     * @return the estimated number of queued operations, never negative
-     */
-    public int getQueueLength() {
-        return (int) Math.max(0, tail.seq - currSeq());
-    }
-
-    /**
-     * Queries whether any operations are estimated to be waiting to be
-     * applied.
-     *
-     * <p>Because this is based on {@link #getQueueLength()}, a {@code true}
-     * result does not guarantee that any operation is still waiting by the
-     * time the caller acts on it. Intended for monitoring only.
-     *
-     * @return {@code true} if the estimated queue length is above zero
-     */
-    public boolean hasQueuedThreads() {
-        return getQueueLength() > 0;
-    }
-
 
     @Override
     public String toString() {
@@ -645,18 +591,20 @@ public class Combiner<E> extends CombinerPad5<E> {
 
     static final VarHandle TAIL;
     static final VarHandle STATE;
-    static final VarHandle CURR_SEQ;
 
 
 
     static {
         var lookup = MethodHandles.lookup();
         try {
-            CURR_SEQ = lookup.findVarHandle(Combiner.class, "currSeq", long.class);
             STATE = lookup.findVarHandle(Combiner.class, "state", int.class);
             TAIL = lookup.findVarHandle(Combiner.class, "tail", Node.class);
         }catch (NoSuchFieldException | IllegalAccessException e) {
             throw new ExceptionInInitializerError(e);
         }
+    }
+
+    public static void main(String[] args) {
+        System.out.println(ClassLayout.parseClass(Combiner.class).toPrintable());
     }
 }

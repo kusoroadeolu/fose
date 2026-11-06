@@ -12,18 +12,15 @@ import java.lang.invoke.VarHandle;
 // their predecessors next field and the head field in volatile mode, with this change, waiters need only read one volatile field
 // per spin. This does come at the cost of an extra byte per node allocation
 
-class Node<E> {
-    final byte kind;
+class Node {
+    byte kind;
     Object arg;
-    Object op;
-
     Object result;
-
     Thread waiter;
-    long seq;
+    Node next;
 
+    volatile Object op;
     volatile int status;
-    volatile Node<E> next;
     volatile byte signal;
 
     static final int WAITING = 1;
@@ -51,6 +48,12 @@ class Node<E> {
         this.signal = signal;
     }
 
+    public Node() {}
+
+    public Node(byte signal) {
+        this.signal = signal;
+    }
+
     void clearStatus() {
         STATUS.setOpaque(this, 0);
     }
@@ -59,8 +62,12 @@ class Node<E> {
         STATUS.getAndBitwiseAnd(this, ~Node.WAITING);
     }
 
-    void detach() {
-        NEXT.set(this, null);
+    public Object getOpAcquire() {
+        return OP.getAcquire(this);
+    }
+
+    public void clearOp() {
+        OP.set(this, null);
     }
 
     public byte getSignalPlain() {
@@ -68,14 +75,14 @@ class Node<E> {
     }
 
     static final VarHandle STATUS;
-    static final VarHandle NEXT;
+    static final VarHandle OP;
     static final VarHandle SIGNAL;
 
     static {
         var lookup = MethodHandles.lookup();
         try {
             SIGNAL = lookup.findVarHandle(Node.class, "signal", byte.class);
-            NEXT = lookup.findVarHandle(Node.class, "next", Node.class);
+            OP = lookup.findVarHandle(Node.class, "op", Object.class);
             STATUS = lookup.findVarHandle(Node.class, "status", int.class);
         }catch (NoSuchFieldException | IllegalAccessException e) {
             throw new RuntimeException(e);
