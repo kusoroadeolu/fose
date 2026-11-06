@@ -3,7 +3,7 @@
 A flat combining primitive for Java. Flat combining allows threads to apply operations to a shared object on each other's behalf, when contention on a lock is detected.
 ***
 
-Wrap a sequential object, then submit operations against it:
+You can simply wrap a sequential object, then submit operations against it:
 
 ```java
 class ThreadSafePriorityQueue<E> {
@@ -30,6 +30,8 @@ class ThreadSafePriorityQueue<E> {
 # Status #
 * Early. Checked with [Lincheck](https://github.com/JetBrains/lincheck) (model checking and stress tests).
 * Requires Java 21.
+
+If you run into any correctness issues or have more stress tests to contribute. Feel free to open a PR
 
 ## Maven ##
 

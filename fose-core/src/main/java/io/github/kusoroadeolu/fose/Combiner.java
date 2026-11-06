@@ -6,6 +6,7 @@ import org.openjdk.jol.info.ClassLayout;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.util.Objects;
+import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.locks.AbstractOwnableSynchronizer;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.BiConsumer;
@@ -54,7 +55,7 @@ class CombinerPad3<E> extends CombinerFields<E> {
 
 class CombinerMiscFields<E> extends CombinerPad3<E> {
     final int spins;
-    final int postParkSpins;
+    final int postSpins;
     final boolean exposeMetrics;
     final int maxOperationsPerPass;
     final E item;
@@ -62,7 +63,7 @@ class CombinerMiscFields<E> extends CombinerPad3<E> {
     CombinerMiscFields(E item, int spins, int postParkSpins, boolean exposeMetrics, int maxOperationsPerPass) {
         this.item = item;
         this.spins = spins;
-        this.postParkSpins = postParkSpins;
+        this.postSpins = postParkSpins;
         this.exposeMetrics = exposeMetrics;
         if (maxOperationsPerPass < 1) throw new IllegalArgumentException("maxOperationsPerPass must be >= 1, got " + maxOperationsPerPass);
         this.maxOperationsPerPass = maxOperationsPerPass;
@@ -142,23 +143,21 @@ public class Combiner<E> extends CombinerPad5<E> {
      * request that its operation be applied by the current combiner instead
      * of waiting to apply it itself.
      *
-     * Enqueueing a node is a CAS on the queue's tail, followed by linking the
-     * previous tail's next pointer to the node. There is a brief window between
-     * these two steps in which the queue seen by a traversing combiner may be
-     * inconsistent. A node only becomes visible to the combiner once the
-     * previous tail's next pointer is linked to it, so a combining pass ends
-     * when the combiner sees a null next pointer. A pass is also capped at
-     * maxOps so one combiner cannot get stuck serving others forever.
+     * Enqueueing a node is an atomic exchange on the queue's tail,
+     * followed by linking the previous tail's next pointer to the node
+     * and making this visible by a volatile write to the node's op field.
+     * There is a brief window between these two steps in which the queue
+     * seen by a traversing combiner may be inconsistent.
+     *
+     * A node only becomes visible to the combiner once it's operation
+     * field has been set so a combining pass ends
+     * when the combiner sees a null operation. A pass is also capped at
+     * maxOps so one combiner cannot get stuck serving others forever
      *
      * A thread may try to become the combiner when its node is first in the
      * queue (i.e. its predecessor is head, the last served node). This only
      * gives it the right to contend, not a guarantee of success, since threads
      * that are not enqueued may barge in and acquire the lock.
-     *
-     * To avoid unnecessary parks, waiters near the head of the queue (judged by
-     * how far their sequence number is ahead of the last served operation) use
-     * an escalating backoff, from spinning to parking. Waiters further from
-     * the head, and virtual threads, park immediately.
      *
      * Signalling parked threads uses a Dekker-like scheme similar to the one
      * in AQS. A to-be-parked thread publishes a PARKING status, then rechecks
@@ -168,13 +167,9 @@ public class Combiner<E> extends CombinerPad5<E> {
      * It atomically clears the status of, and unparks, any served waiter that was
      * PARKING during its combining pass
      *
-     * Accesses to head (except under the lock), tail and state are volatile
-     * while currSeq uses opaque accesses, which is fine since it is only a
-     * heuristic for choosing a thread's initial wait strategy and isn't needed for
-     * correctness.
-     *
+     * Accesses to operation, tail and state are volatile to ensure correct ordering
      * The fields are spread across a chain of padded superclasses to avoid
-     * false sharing between state, tail, head and currSeq.
+     * false sharing between state, tail, head and certain read only fields.
      *
      * Interrupts are deferred while waiting (park would otherwise return
      * immediately, and a node cannot be abandoned once published) and restored
@@ -194,14 +189,9 @@ public class Combiner<E> extends CombinerPad5<E> {
     static final int MAX_OPERATIONS_PER_PASS = 25;
 
     /**
-     * Number of available cpus
+     * Is a uniprocessor system
      * */
-    static final int NCPU = Runtime.getRuntime().availableProcessors();
-
-    /**
-     * Max number of waiters in the queue that are allowed to spin
-     * */
-    static final int MAX_SPINNING_WAITERS = (int) (NCPU * 0.6);
+    static final boolean UPC = Runtime.getRuntime().availableProcessors() == 1;
 
     /**
      * Max number of spins a spinning waiter can exhaust before parking
@@ -211,7 +201,7 @@ public class Combiner<E> extends CombinerPad5<E> {
     /**
      * Max number of spins a previously parked waiter can exhaust before reparking
      * */
-    static final int POST_PARK_SPINS = 1 << 5;
+    static final int POST_SPINS = 1 << 5;
 
     //Public constructors
     public Combiner(E item) {
@@ -224,7 +214,7 @@ public class Combiner<E> extends CombinerPad5<E> {
 
     //For benchmarks
     Combiner(E item, int maxOperationsPerPass, boolean exposeMetrics) {
-        this(item, maxOperationsPerPass, exposeMetrics, SPINS, POST_PARK_SPINS);
+        this(item, maxOperationsPerPass, exposeMetrics, SPINS, POST_SPINS);
     }
 
 
@@ -306,7 +296,6 @@ public class Combiner<E> extends CombinerPad5<E> {
         return (R) result;
     }
 
-
     @SuppressWarnings("unchecked")
     private static <E> Object execute(int kind, Object op, Object arg, E item) {
         return switch (kind) {
@@ -341,7 +330,7 @@ public class Combiner<E> extends CombinerPad5<E> {
     }
 
     private void notifyNextWaiter(Node node) {
-        Object op = node.op;
+        Object op = node.operation;
         Thread w = (op != null && node.status == WAITING) ? node.waiter : null;
         if (w != null) {
             node.unsetWaitingStatus();
@@ -366,7 +355,7 @@ public class Combiner<E> extends CombinerPad5<E> {
         Object op;
 
         try {
-            while (ops < m && (op = node.getOpAcquire()) != null) {
+            while (ops < m && (op = node.getOperationAcquire()) != null) {
 
                 Node n = node.next; //made visible my acquire read of node.op
 
@@ -392,6 +381,7 @@ public class Combiner<E> extends CombinerPad5<E> {
             recordMetrics(ops);
         }finally {
             if (node.getSignalPlain() != IS_COMBINER) node.signal = IS_COMBINER;
+
             head = node;
             release();
 
@@ -413,7 +403,7 @@ public class Combiner<E> extends CombinerPad5<E> {
 
     private  <R> R tryCombining(byte kind, Object op, Object arg) {
         boolean wasInterrupted = false;
-        Node succ = null, node = null;
+        Node node = null, succ = null;
         Thread w = Thread.currentThread();
         int signal = 0;
 
@@ -436,21 +426,20 @@ public class Combiner<E> extends CombinerPad5<E> {
                 if (succ == null) {
                     succ = new Node();
                 } else if (node == null) {
-
                     node = xchgTail(succ);
 
                     node.kind = kind;
                     node.arg = arg;
                     node.next = succ;
 
-                    node.op = op; //make op and earlier writes visible
+                    node.operation = op; //make op and earlier writes visible
 
                 } else if (spinning && spins > 0) {
                     --spins;
                     Thread.onSpinWait();
                 } else if (node.status == 0) {
 
-                    if (spins > 0 && !w.isVirtual()) {
+                    if (spins > 0 && !w.isVirtual() && !UPC) {
                         spinning = true;
                     } else {
                         node.waiter = w;
@@ -462,7 +451,7 @@ public class Combiner<E> extends CombinerPad5<E> {
                     LockSupport.park(this);
                     if (!wasInterrupted && Thread.interrupted()) wasInterrupted = true;
                     node.clearStatus();                    // clear status & loop top rechecked prev.signal first
-                    if (spins <= 0) spins = postParkSpins;
+                    if (spins <= 0) spins = postSpins;
                 }
 
             }
@@ -486,7 +475,7 @@ public class Combiner<E> extends CombinerPad5<E> {
     }
 
     private void cleanNode(Node node) {
-        node.clearOp();
+        node.clearOperation();
         node.waiter = null;
         node.result = null;
         node.arg = null;
@@ -519,7 +508,6 @@ public class Combiner<E> extends CombinerPad5<E> {
     private Node xchgTail(Node node) {
         return (Node) TAIL.getAndSet(this, node);
     }
-
 
 
     // Inspection & Debuggability
@@ -604,7 +592,4 @@ public class Combiner<E> extends CombinerPad5<E> {
         }
     }
 
-    public static void main(String[] args) {
-        System.out.println(ClassLayout.parseClass(Combiner.class).toPrintable());
-    }
 }
