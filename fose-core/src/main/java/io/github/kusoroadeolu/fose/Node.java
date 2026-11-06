@@ -17,7 +17,6 @@ class Node<E> {
     Object arg;
     Object op;
 
-    Throwable err;
     Object result;
 
     Thread waiter;
@@ -25,11 +24,11 @@ class Node<E> {
 
     volatile int status;
     volatile Node<E> next;
-    volatile byte verdict;
+    volatile byte signal;
 
     static final int WAITING = 1;
     static final byte FN = 1, CONSUMER = 2, BI_FN = 3, BI_CONSUMER = 4;
-    static final byte SERVED = 1, IS_COMBINER = 2;
+    static final byte SERVED = 1, IS_COMBINER = 2, ERR_OCCURRED = 3;
 
     //We'll do something quite similar to the waiting scheme in aqs to support unbounded parks
 
@@ -45,11 +44,11 @@ class Node<E> {
         this.arg = arg;
     }
 
-    public Node(byte kind, Object op, Object arg, byte verdict) {
+    public Node(byte kind, Object op, Object arg, byte signal) {
         this.kind = kind;
         this.op = op;
         this.arg = arg;
-        this.verdict = verdict;
+        this.signal = signal;
     }
 
     void clearStatus() {
@@ -64,12 +63,18 @@ class Node<E> {
         NEXT.set(this, null);
     }
 
+    public byte getSignalPlain() {
+        return (byte) SIGNAL.get(this);
+    }
+
     static final VarHandle STATUS;
     static final VarHandle NEXT;
+    static final VarHandle SIGNAL;
 
     static {
         var lookup = MethodHandles.lookup();
         try {
+            SIGNAL = lookup.findVarHandle(Node.class, "signal", byte.class);
             NEXT = lookup.findVarHandle(Node.class, "next", Node.class);
             STATUS = lookup.findVarHandle(Node.class, "status", int.class);
         }catch (NoSuchFieldException | IllegalAccessException e) {

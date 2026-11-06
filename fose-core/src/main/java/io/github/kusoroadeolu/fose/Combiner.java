@@ -344,7 +344,7 @@ public class Combiner<E> extends CombinerPad5<E> {
             notifyNextWaiter(head);
         }
 
-        return result(node);
+        return result(node, node.getSignalPlain());
     }
 
     private void notifyNextWaiter(Node<E> prev) {
@@ -376,14 +376,17 @@ public class Combiner<E> extends CombinerPad5<E> {
             while (ops < m && (curr = prev.next) != null) {
 
                 long seq = curr.seq;
+                prev.detach();
                 try {
                     curr.result = execute(curr.kind, curr.op, curr.arg, item);
+                    prev.signal = SERVED; //make result visible to waiter
                 } catch (Throwable t) {
-                    curr.err = t;
+                    curr.result = t;
+                    prev.signal = ERR_OCCURRED; //make result visible to waiter
+
                 }
 
                 prev.detach();
-                prev.verdict = SERVED; //make result visible to waiter
 
                 if (curr.status == WAITING) {
                     if (waiters == null)
@@ -399,7 +402,7 @@ public class Combiner<E> extends CombinerPad5<E> {
 
             recordMetrics(ops);
         }finally {
-            prev.verdict = IS_COMBINER;
+            prev.signal = IS_COMBINER;
             head = prev;
             release();
 
@@ -424,18 +427,18 @@ public class Combiner<E> extends CombinerPad5<E> {
         boolean wasInterrupted = false;
         Node<E> node = null, prev = null;
         Thread w = null;
+        int signal = 0;
 
         try {
             boolean first = false;
-            long remSpins = spins;
+            long spins = this.spins;
             boolean spinning = false;
 
-
             for (;;) {
-                byte verdict = 0;
-                if (prev != null && (verdict = prev.verdict) == SERVED) break;
 
-                if (first || prev == null || (first = (verdict == IS_COMBINER))) {
+                if (prev != null && ((signal = prev.signal) & 1) == 1) break;
+
+                if (first || prev == null || (first = (signal == IS_COMBINER))) {
                     if (tryAcquire()) {
                         if (first) return combineEnqueued(prev, node);
                         else return combine(kind, op, arg);
@@ -457,12 +460,12 @@ public class Combiner<E> extends CombinerPad5<E> {
 
                     prev = t;
                     prev.next = node;
-                } else if (spinning && remSpins > 0) {
-                    --remSpins;
+                } else if (spinning && spins > 0) {
+                    --spins;
                     Thread.onSpinWait();
                 } else if (node.status == 0) {
 
-                    if (remSpins > 0 && !w.isVirtual() && shouldSpin(node, currSeq())) {
+                    if (spins > 0 && !w.isVirtual() && shouldSpin(node, currSeq())) {
                         spinning = true;
                     } else {
                         spinning = false;
@@ -473,7 +476,7 @@ public class Combiner<E> extends CombinerPad5<E> {
                     LockSupport.park(this);
                     if (!wasInterrupted && Thread.interrupted()) wasInterrupted = true;
                     node.clearStatus();                    // clear status & loop top rechecked prev.next/head first
-                    if (remSpins <= 0) remSpins = postParkSpins;
+                    if (spins <= 0) spins = postParkSpins;
                 }
 
             }
@@ -481,7 +484,7 @@ public class Combiner<E> extends CombinerPad5<E> {
             if (wasInterrupted) Thread.currentThread().interrupt();
         }
 
-        return result(node);
+        return result(node, signal);
     }
 
     private boolean shouldSpin(Node<E> node, long seenSeq) {
@@ -489,9 +492,9 @@ public class Combiner<E> extends CombinerPad5<E> {
         return (s - seenSeq) <= MAX_SPINNING_WAITERS;
     }
 
-    private <R> R result(Node<E> node) {
-        if (node.err != null) {
-            Throwable t = node.err;
+    private <R> R result(Node<E> node, int signal) {
+        if (signal == ERR_OCCURRED) {
+            Throwable t = (Throwable) node.result;
             cleanNode(node);
             throw new CombiningException(t);
         } else {
@@ -502,7 +505,6 @@ public class Combiner<E> extends CombinerPad5<E> {
     }
 
     private void cleanNode(Node<E> node) {
-        node.err = null;
         node.op = null;
         node.waiter = null;
         node.result = null;
