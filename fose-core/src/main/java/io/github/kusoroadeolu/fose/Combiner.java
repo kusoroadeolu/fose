@@ -196,12 +196,12 @@ public class Combiner<E> extends CombinerPad5<E> {
     /**
      * Max number of spins a spinning waiter can exhaust before parking
      * */
-    static final int SPINS = 1 << 7;
+    static final int SPINS = 1 << 5;
 
     /**
      * Max number of spins a previously parked waiter can exhaust before reparking
      * */
-    static final int POST_SPINS = 1 << 5;
+    static final int POST_SPINS = 1 << 3;
 
     //Public constructors
     public Combiner(E item) {
@@ -355,9 +355,9 @@ public class Combiner<E> extends CombinerPad5<E> {
         Object op;
 
         try {
-            while (ops < m && (op = node.getOperationAcquire()) != null) {
+            while (ops < m && (op = node.opAcquire()) != null) {
 
-                Node n = node.next; //made visible my acquire read of node.op
+                Node n = node.next; //made visible by acquire read of node.op
 
                 try {
                     node.result = execute(node.kind, op, node.arg, item);
@@ -380,7 +380,7 @@ public class Combiner<E> extends CombinerPad5<E> {
 
             recordMetrics(ops);
         }finally {
-            if (node.getSignalPlain() != IS_COMBINER) node.signal = IS_COMBINER;
+            if (node.signalPlain() != IS_COMBINER) node.signal = IS_COMBINER;
 
             head = node;
             release();
@@ -406,14 +406,12 @@ public class Combiner<E> extends CombinerPad5<E> {
         Node node = null, succ = null;
         Thread w = Thread.currentThread();
         int signal = 0;
+        boolean parked = false;
 
         try {
             boolean canCombine = false;
             int spins = this.spins;
             boolean spinning = false;
-            boolean refilled = false; //idea behind this is
-            //if we realize we're meant to be the combiner but failed to acquire the lock
-            //spin a bit more before parking cause our result might be served soon
 
             for (;;) {
                 if (node != null && ((signal = node.signal) & 1) == 1) break;
@@ -422,12 +420,6 @@ public class Combiner<E> extends CombinerPad5<E> {
                     if (tryAcquire()) {
                         if (canCombine) return combineEnqueued(node);
                         else return combine(kind, op, arg);
-                    }
-
-                    if (canCombine && !refilled) {
-                        if (spins < postSpins) spins = postSpins;
-                        if (!w.isVirtual() && !UPC) spinning = true;
-                        refilled = true;
                     }
                 }
 
@@ -449,6 +441,8 @@ public class Combiner<E> extends CombinerPad5<E> {
 
                     if (spins > 0 && !w.isVirtual() && !UPC) {
                         spinning = true;
+                    } else if (parked && canCombine) {
+                        spins = postSpins;
                     } else {
                         node.waiter = w;
                         node.status = WAITING;
@@ -459,7 +453,7 @@ public class Combiner<E> extends CombinerPad5<E> {
                     LockSupport.park(this);
                     if (!wasInterrupted && Thread.interrupted()) wasInterrupted = true;
                     node.clearStatus();                    // clear status & loop top rechecked prev.signal first
-                    if (spins <= 0) spins = postSpins;
+                    parked = true;
                 }
 
             }
@@ -470,7 +464,7 @@ public class Combiner<E> extends CombinerPad5<E> {
     }
 
     private <R> R result(Node node) {
-        if (node.getSignalPlain() == ERR_OCCURRED) {
+        if (node.signalPlain() == ERR_OCCURRED) {
             Throwable t = (Throwable) node.result;
             cleanNode(node);
             throw new CombiningException(t);
@@ -482,7 +476,7 @@ public class Combiner<E> extends CombinerPad5<E> {
     }
 
     private void cleanNode(Node node) {
-        node.clearOperation();
+        node.clearOp();
         node.waiter = null;
         node.result = null;
         node.arg = null;
@@ -490,7 +484,7 @@ public class Combiner<E> extends CombinerPad5<E> {
     }
 
     boolean tryAcquire() {
-        if (state == FREE && (int) STATE.getAndAdd(this, 1) == FREE) {
+        if (state == FREE && STATE.compareAndSet(this, FREE, 1)) {
             setExclusiveOwnerThread(Thread.currentThread());
             return true;
         }
@@ -499,7 +493,7 @@ public class Combiner<E> extends CombinerPad5<E> {
     }
 
     boolean weakTryAcquire() {
-        if ((int) STATE.getOpaque(this) == FREE && (int) STATE.getAndAdd(this, 1) == FREE) {
+        if ((int) STATE.getOpaque(this) == FREE &&  STATE.compareAndSet(this, FREE, 1)) {
             setExclusiveOwnerThread(Thread.currentThread());
             return true;
         }

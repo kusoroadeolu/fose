@@ -34,15 +34,15 @@ class Node {
         STATUS.getAndBitwiseAnd(this, ~Node.WAITING);
     }
 
-    public Object getOperationAcquire() {
+    public Object opAcquire() {
         return OP.getAcquire(this);
     }
 
-    public void clearOperation() {
+    public void clearOp() {
         OP.set(this, null);
     }
 
-    public byte getSignalPlain() {
+    public byte signalPlain() {
         return (byte) SIGNAL.get(this);
     }
 

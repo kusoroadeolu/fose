@@ -118,7 +118,7 @@ public class CacheLineBenchmark {
         @Param({"5"})
         public int lines;
 
-        @Param({"100"})
+        @Param({"0"})
         public int work;
 
 

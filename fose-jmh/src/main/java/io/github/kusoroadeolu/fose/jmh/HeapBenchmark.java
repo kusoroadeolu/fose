@@ -16,8 +16,8 @@ import java.util.function.Function;
 @Fork(value = 3, jvmArgs = {Args.INITIAL_HEAP_SIZE, Args.MAX_HEAP_SIZE, Args.GC_TYPE})
 @Warmup(iterations = 5, time = 1)
 @Measurement(iterations = 5, time = 1)
-@BenchmarkMode(Mode.Throughput)
-@OutputTimeUnit(TimeUnit.MICROSECONDS)
+@BenchmarkMode(Mode.SampleTime)
+@OutputTimeUnit(TimeUnit.NANOSECONDS)
 public class HeapBenchmark {
 
     static final class HeapData {
@@ -56,6 +56,7 @@ public class HeapBenchmark {
         }
 
         // pop min, insert min + random delta, so size stays constant, no gc interference
+        // well though long will get boxed, so
         long hold() {
             long min = h[0];
             siftDown(0, min + (next() & DELTA_MASK));
