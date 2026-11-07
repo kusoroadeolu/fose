@@ -344,6 +344,7 @@ public class Combiner<E> extends CombinerPad5<E> {
             notifyNextWaiter(head);
         }
 
+        prev.detach();
         return result(node, node.getSignalPlain());
     }
 
@@ -374,9 +375,8 @@ public class Combiner<E> extends CombinerPad5<E> {
 
         try {
             while (ops < m && (curr = prev.next) != null) {
-
                 long seq = curr.seq;
-                prev.detach();
+
                 try {
                     curr.result = execute(curr.kind, curr.op, curr.arg, item);
                     prev.signal = SERVED; //make result visible to waiter
@@ -386,15 +386,13 @@ public class Combiner<E> extends CombinerPad5<E> {
 
                 }
 
-                prev.detach();
-
                 if (curr.status == WAITING) {
                     if (waiters == null)
                         waiters = new Node[(int) (m - ops)];
                     waiters[waiting++] = curr;
                 }
 
-                 updateSeq(seq); //plain read of curr.seq made visible by read of pred.next, a weak write is also alright here
+                updateSeq(seq); //plain read of curr.seq made visible by read of pred.next, a weak write is also alright here
 
                 ops++;
                 prev = curr;
@@ -484,6 +482,7 @@ public class Combiner<E> extends CombinerPad5<E> {
             if (wasInterrupted) Thread.currentThread().interrupt();
         }
 
+        prev.detach();
         return result(node, signal);
     }
 

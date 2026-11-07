@@ -20,8 +20,8 @@ import java.util.function.Consumer;
 @Fork(value = 3, jvmArgs = {Args.INITIAL_HEAP_SIZE, Args.MAX_HEAP_SIZE, Args.GC_TYPE})
 @Warmup(iterations = 5, time = 1)
 @Measurement(iterations = 5, time = 1)
-@BenchmarkMode(Mode.SampleTime)
-@OutputTimeUnit(TimeUnit.NANOSECONDS)
+@BenchmarkMode(Mode.Throughput)
+@OutputTimeUnit(TimeUnit.MICROSECONDS)
 public class CacheLineBenchmark {
 
     //More or less the structure we're working on
@@ -133,17 +133,17 @@ public class CacheLineBenchmark {
         }
     }
 
-    @Benchmark
-    public void baselineAdd(LockState sc) {
-        sc.lock.lock();
-        try {
-            sc.baseData.add();
-        } finally {
-            sc.lock.unlock();
-        }
-
-        Blackhole.consumeCPU(sc.work);
-    }
+//    @Benchmark
+//    public void baselineAdd(LockState sc) {
+//        sc.lock.lock();
+//        try {
+//            sc.baseData.add();
+//        } finally {
+//            sc.lock.unlock();
+//        }
+//
+//        Blackhole.consumeCPU(sc.work);
+//    }
 
 
     @Benchmark
@@ -155,7 +155,7 @@ public class CacheLineBenchmark {
 
     public static void main(String[] args) throws Exception {
         int cores = Runtime.getRuntime().availableProcessors();
-        for (int t : new int[]{8}) {
+        for (int t : Args.THREAD_SWEEP) {
             if (t > cores * 2) break;
             String resultFile = "jmh-threads-" + t + ".json";
             new Runner(
