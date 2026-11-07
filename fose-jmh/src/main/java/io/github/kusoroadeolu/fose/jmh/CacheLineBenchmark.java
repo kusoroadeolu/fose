@@ -133,17 +133,17 @@ public class CacheLineBenchmark {
         }
     }
 
-//    @Benchmark
-//    public void baselineAdd(LockState sc) {
-//        sc.lock.lock();
-//        try {
-//            sc.baseData.add();
-//        } finally {
-//            sc.lock.unlock();
-//        }
-//
-//        Blackhole.consumeCPU(sc.work);
-//    }
+    @Benchmark
+    public void baselineAdd(LockState sc) {
+        sc.lock.lock();
+        try {
+            sc.baseData.add();
+        } finally {
+            sc.lock.unlock();
+        }
+
+        Blackhole.consumeCPU(sc.work);
+    }
 
 
     @Benchmark

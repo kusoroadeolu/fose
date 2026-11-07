@@ -6,7 +6,6 @@ import org.openjdk.jol.info.ClassLayout;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.util.Objects;
-import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.locks.AbstractOwnableSynchronizer;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.BiConsumer;
@@ -71,6 +70,7 @@ class CombinerMiscFields<E> extends CombinerPad3<E> {
 }
 
 class CombinerPad5<E> extends CombinerMiscFields<E> {
+    byte b0, b1, b2, b3;
     long a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16;
 
     CombinerPad5(E item, int spins, int postParkSpins, boolean exposeMetrics, int maxOperationsPerPass) {
@@ -409,17 +409,25 @@ public class Combiner<E> extends CombinerPad5<E> {
 
         try {
             boolean canCombine = false;
-            long spins = this.spins;
+            int spins = this.spins;
             boolean spinning = false;
+            boolean refilled = false; //idea behind this is
+            //if we realize we're meant to be the combiner but failed to acquire the lock
+            //spin a bit more before parking cause our result might be served soon
 
             for (;;) {
-
                 if (node != null && ((signal = node.signal) & 1) == 1) break;
 
                 if (canCombine || succ == null || (canCombine = (signal == IS_COMBINER))) {
                     if (tryAcquire()) {
                         if (canCombine) return combineEnqueued(node);
                         else return combine(kind, op, arg);
+                    }
+
+                    if (canCombine && !refilled) {
+                        if (spins < postSpins) spins = postSpins;
+                        if (!w.isVirtual() && !UPC) spinning = true;
+                        refilled = true;
                     }
                 }
 
@@ -458,7 +466,6 @@ public class Combiner<E> extends CombinerPad5<E> {
         } finally {
             if (wasInterrupted) Thread.currentThread().interrupt();
         }
-
         return result(node);
     }
 
@@ -508,7 +515,6 @@ public class Combiner<E> extends CombinerPad5<E> {
     private Node xchgTail(Node node) {
         return (Node) TAIL.getAndSet(this, node);
     }
-
 
     // Inspection & Debuggability
     /**
@@ -590,6 +596,11 @@ public class Combiner<E> extends CombinerPad5<E> {
         }catch (NoSuchFieldException | IllegalAccessException e) {
             throw new ExceptionInInitializerError(e);
         }
+    }
+
+    public static void main(String[] args) {
+        var s = ClassLayout.parseClass(Combiner.class).toPrintable();
+        System.out.println(s);
     }
 
 }
