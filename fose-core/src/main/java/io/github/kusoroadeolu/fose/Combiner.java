@@ -326,8 +326,7 @@ public class Combiner<E> extends CombinerPad5<E> {
             notifyNextWaiter(head);
         }
 
-        prev.detach();
-        return result(node, node.getSignalPlain());
+        return result(node);
     }
 
     private void notifyNextWaiter(Node node) {
@@ -356,8 +355,9 @@ public class Combiner<E> extends CombinerPad5<E> {
         Object op;
 
         try {
-            while (ops < m && (curr = prev.next) != null) {
-                long seq = curr.seq;
+            while (ops < m && (op = node.getOperationAcquire()) != null) {
+
+                Node n = node.next; //made visible my acquire read of node.op
 
                 try {
                     node.result = execute(node.kind, op, node.arg, item);
@@ -368,13 +368,11 @@ public class Combiner<E> extends CombinerPad5<E> {
 
                 }
 
-                if (curr.status == WAITING) {
+                if (node.status == WAITING) {
                     if (waiters == null)
                         waiters = new Node[(int) (m - ops)];
                     waiters[waiting++] = node;
                 }
-
-                updateSeq(seq); //plain read of curr.seq made visible by read of pred.next, a weak write is also alright here
 
                 ops++;
                 node = n;
@@ -461,13 +459,7 @@ public class Combiner<E> extends CombinerPad5<E> {
             if (wasInterrupted) Thread.currentThread().interrupt();
         }
 
-        prev.detach();
-        return result(node, signal);
-    }
-
-    private boolean shouldSpin(Node<E> node, long seenSeq) {
-        long s = node.seq;
-        return (s - seenSeq) <= MAX_SPINNING_WAITERS;
+        return result(node);
     }
 
     private <R> R result(Node node) {
