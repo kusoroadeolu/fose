@@ -25,6 +25,6 @@ public class CombinerLincheckStressTest {
                 .actorsPerThread(4)
                 .iterations(200)
                 .invocationsPerIteration(5_000)
-                .check(this.getClass());
+                .check(getClass());
     }
 }

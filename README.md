@@ -44,38 +44,39 @@ If you run into any correctness issues or have more stress tests to contribute. 
 ```
 
 # Performance #
-Benchmarks are written with JMH and compare `Combiner` against a non-fair `ReentrantLock` guarding the same data. Each operation is followed by a fixed amount of busy work outside the lock simulated using `Blackhole.consumeCpu()`.
-Results show sampled per-operation latency in nanoseconds, measured with 1 thread up to 2x your machine’s logical CPU count.
+The benchmarks are written with JMH and compare `Combiner` against a non-fair `ReentrantLock` guarding the same data. 
+Also, each operation is followed by a fixed amount of busy work outside the lock simulated using `Blackhole.consumeCpu()`.
 
 There are two workloads we benchmark against:
 * **Cache line:** each operation writes to 5 counters, each on its own cache line. This is the best case for combining, since a plain lock drags all five lines across cores on every handoff.
 * **Heap hold:** a 65,536-element binary min-heap (512 KB). Each operation pops the min and reinserts `min + random delta`. A larger working set, and operations that return a value.
 
-- Machine: Intel i5 (4 cores / 8 logical CPUs), Windows, JDK 21.
 
-Mean latency per operation in nanoseconds (lower is better). Speedup is `ReentrantLock / Combiner`.
+These numbers were gotten on a machine with an Intel i5 processor with 4 physical cores and 8 logical CPUs on a Windows OS.
+
+These results are mean latency per operation in nanoseconds (lower is better).
 
 **Cache line**
 
-| Threads | ReentrantLock | Combiner | Speedup |
-|---|---|---|---|
-| 1  | 260.8   | 273.5   | 0.95x |
-| 2  | 303.6   | 394.0   | 0.77x |
-| 4  | 998.5   | 655.7   | 1.52x |
-| 6  | 1,454.8 | 797.1   | 1.83x |
-| 8  | 1,893.8 | 967.9   | 1.96x |
-| 16 | 3,514.5 | 3,399.9 | 1.03x |
+| Threads | ReentrantLock | Combiner |
+|---|---|---|
+| 1  | 261.4   | 267.8   |
+| 2  | 313.5   | 336.0   |
+| 4  | 955.6   | 566.6   |
+| 6  | 1,343.9 | 644.1   |
+| 8  | 1,952.8 | 838.6   |
+| 16 | 3,552.8 | 3,277.4 |
 
 **Heap hold**
 
-| Threads | ReentrantLock | Combiner | Speedup |
-|---|---|---|---|
-| 1  | 294.6   | 308.3   | 0.96x |
-| 2  | 897.5   | 588.6   | 1.52x |
-| 4  | 2,113.7 | 968.3   | 2.18x |
-| 6  | 3,015.9 | 1,436.9 | 2.10x |
-| 8  | 4,044.8 | 2,507.7 | 1.61x |
-| 16 | 7,921.7 | 4,569.3 | 1.73x |
+| Threads | ReentrantLock | Combiner |
+|---|---|---|
+| 1  | 294.0   | 318.4   |
+| 2  | 890.7   | 586.7   |
+| 4  | 2,310.7 | 961.3   |
+| 6  | 3,416.1 | 1,226.6 |
+| 8  | 4,137.8 | 1,950.2 |
+| 16 | 8,386.7 | 5,858.3 |
 
 ## Building and running ##
 
@@ -102,6 +103,8 @@ mvn test
 # References #
 * Hendler, Incze, Shavit, Tzafrir. [Flat Combining and the Synchronization-Parallelism Tradeoff](https://doi.org/10.1145/1810479.1810540). SPAA 2010.
 * Fatourou, Kallimanis. Revisiting the combining synchronization technique. PPoPP 2012.
+* Meta. [`FlatCombining.h`](https://github.com/meta/folly/blob/main/folly/synchronization/FlatCombining.h). Folly's C++ flat combining implementation.
+* Meta. [`FlatCombiningBenchmark.cpp`](https://github.com/meta/folly/blob/main/folly/synchronization/test/FlatCombiningBenchmark.cpp). Folly's flat combining benchmarks.
 
 # License #
 MIT

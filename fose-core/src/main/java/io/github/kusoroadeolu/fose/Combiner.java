@@ -1,8 +1,6 @@
 package io.github.kusoroadeolu.fose;
 
 
-import org.openjdk.jol.info.ClassLayout;
-
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.util.Objects;
@@ -42,9 +40,9 @@ class CombinerFields<E> extends CombinerPad2<E> {
     Node head;
 
     //metrics
-    long _combined;
+    long _combining_passes;
     long _passes;
-    long _total_ops;
+    long _total_combined_ops;
 }
 
 class CombinerPad3<E> extends CombinerFields<E> {
@@ -127,54 +125,66 @@ class CombinerPad5<E> extends CombinerMiscFields<E> {
  * @author kusoroadeolu
  */
 @SuppressWarnings("unchecked")
-public class Combiner<E> extends CombinerPad5<E> {
+public final class Combiner<E> extends CombinerPad5<E> {
 
 
     /*
      * The idea of flat combining was introduced in the 2010 SPAA paper "Flat
      * Combining and the Synchronization-Parallelism Tradeoff" (Hendler, Incze,
-     * Shavit, Tzafrir).
+     * Shavit, Tzafrir) [1]. This design is mainly inspired by [2].
      *
      * Flat combining is an alternative to fine-grained locking for making a
-     * sequential structure thread-safe, while minimizing the synchronization
+     * sequential structure thread-safe. It minimizes the synchronization
      * overhead and cache coherence traffic incurred when acquiring a lock.
      *
      * The basic idea is that when a thread finds the lock contended, it can
-     * request that its operation be applied by the current combiner instead
-     * of waiting to apply it itself.
+     * ask the current combiner to apply its operation instead of waiting to
+     * apply it itself.
      *
-     * Enqueueing a node is an atomic exchange on the queue's tail,
-     * followed by linking the previous tail's next pointer to the node
-     * and making this visible by a volatile write to the node's op field.
-     * There is a brief window between these two steps in which the queue
-     * seen by a traversing combiner may be inconsistent.
+     * A thread that wants to be combined enqueues onto a shared request queue.
+     * Enqueueing involves three steps:
+     * 1. The thread allocates a new node (succ) for the next thread to use.
+     * 2. The thread installs its allocated node as the tail and gets the
+     *    previous tail back.
+     * 3. The thread declares its intent to be combined by writing to the
+     *    previous tail, claiming that node.
      *
-     * A node only becomes visible to the combiner once it's operation
-     * field has been set so a combining pass ends
-     * when the combiner sees a null operation. A pass is also capped at
-     * maxOps so one combiner cannot get stuck serving others forever
+     * After enqueuing, a thread only ever writes to and spins on its claimed
+     * node, which no other thread (except the combiner) interacts with. This
+     * improves per-thread locality and reduces memory traffic.
      *
-     * A thread may try to become the combiner when its node is first in the
-     * queue (i.e. its predecessor is head, the last served node). This only
-     * gives it the right to contend, not a guarantee of success, since threads
-     * that are not enqueued may barge in and acquire the lock.
+     * These steps are not atomic, so there is a brief window in which the
+     * queue seen by a traversing combiner may be inconsistent. Therefore, a
+     * combining pass ends when the combiner sees a null operation. A pass is
+     * also capped so that one combiner cannot get stuck serving others forever.
+     *
+     * After declaring its intent to be combined, a thread waits on the signal
+     * flag in its claimed node. The thread is notified that its operation has
+     * been combined when the lower bit of its signal flag is 1. It is notified
+     * that it may contend to be the combiner when its signal flag equals
+     * IS_COMBINER.
+     *
+     * The right to contend does not guarantee that the thread becomes the
+     * combiner, because a later-arriving, un-enqueued thread can barge in and
+     * take the role. If a waiting thread is not virtual and the machine is not
+     * a uniprocessor, the thread parks after a bounded number of
+     * spins, otherwise it parks immediately after enqueuing.
      *
      * Signalling parked threads uses a Dekker-like scheme similar to the one
-     * in AQS. A to-be-parked thread publishes a PARKING status, then rechecks
-     * whether its request has been applied or its node is first in the queue
-     * before parking. After releasing the lock, the combiner
-     * atomically clears the status & unparks the next waiter if it is PARKING.
-     * It atomically clears the status of, and unparks, any served waiter that was
-     * PARKING during its combining pass
+     * in AQS (AbstractQueuedSynchronizer). A thread about to park first
+     * publishes a WAITING status. It then rechecks whether its request has
+     * been applied or its node is first in the queue, and only then parks.
+     * After releasing the lock, the combiner atomically clears the status of
+     * the next waiter and unparks it if it was WAITING. The combiner does the
+     * same for any served waiter that was WAITING during its combining pass.
      *
-     * Accesses to operation, tail and state are volatile to ensure correct ordering
      * The fields are spread across a chain of padded superclasses to avoid
-     * false sharing between state, tail, head and certain read only fields.
+     * false sharing between state, tail, head, and certain read-only fields.
      *
-     * Interrupts are deferred while waiting (park would otherwise return
-     * immediately, and a node cannot be abandoned once published) and restored
-     * on exit. Exceptions thrown by a combined op are rethrown in the owning
-     * thread as CombiningException.
+     * Interrupts are deferred while waiting and restored on exit. Otherwise,
+     * park would return immediately, and a node cannot be abandoned once it
+     * is published. Exceptions thrown by a combined operation are rethrown
+     * in the owning thread as CombiningException.
      *
      * References:
      * [1] Flat Combining and the Synchronization-Parallelism Tradeoff
@@ -191,7 +201,7 @@ public class Combiner<E> extends CombinerPad5<E> {
     /**
      * Is a uniprocessor system
      * */
-    static final boolean UPC = Runtime.getRuntime().availableProcessors() == 1;
+    static final boolean IS_UNIPROCESSOR = Runtime.getRuntime().availableProcessors() == 1;
 
     /**
      * Max number of spins a spinning waiter can exhaust before parking
@@ -277,8 +287,8 @@ public class Combiner<E> extends CombinerPad5<E> {
     //Internals & Helpers
     private <R> R submit(byte kind, Object op, Object arg) {
         Objects.requireNonNull(op);
-        if (weakTryAcquire()) return combine(kind, op, arg); //we dont need a strong TTAS here
-        return tryCombining(kind, op, arg);
+        if (weakTryAcquire()) return combine(kind, op, arg); //weak ttas is fine here
+        return enqueueAndAwait(kind, op, arg);
     }
 
     private  <R> R combine(byte kind, Object op, Object arg) {
@@ -290,7 +300,7 @@ public class Combiner<E> extends CombinerPad5<E> {
         }catch (Throwable t) {
             throw new CombiningException(t);
         } finally {
-            combinePass();
+            combineAndNotifyQueuedThreads();
         }
 
         return (R) result;
@@ -317,10 +327,10 @@ public class Combiner<E> extends CombinerPad5<E> {
     //Tries to run its own op, if it is not at the head
     //of the queue, its op has been applied, and we notify the next waiter
     //otherwise, combine pass
-    private  <R> R combineEnqueued(Node node) {
+    private  <R> R combine(Node node) {
         Node head = this.head;
         if (head == node) {
-            combinePass();
+            combineAndNotifyQueuedThreads();
         } else {
             release();
             notifyNextWaiter(head);
@@ -331,7 +341,7 @@ public class Combiner<E> extends CombinerPad5<E> {
 
     private void notifyNextWaiter(Node node) {
         Object op = node.operation;
-        Thread w = (op != null && node.status == WAITING) ? node.waiter : null;
+        Thread w = (op != null && node.status == WAITING) ? node.waiter : null; //volatile read to node.status here ties the ordering
         if (w != null) {
             node.unsetWaitingStatus();
             LockSupport.unpark(w);
@@ -344,7 +354,7 @@ public class Combiner<E> extends CombinerPad5<E> {
     // after combining we handoff to the next eligible thread
     // while also handling the issue of a lost wakeup (see below)
     // and unpark parked threads we came across during our pass
-    private void combinePass() {
+    private void combineAndNotifyQueuedThreads() {
         //assert Thread.currentThread() == getOwner();
         Node node = head;
         final E item = this.item;
@@ -380,14 +390,24 @@ public class Combiner<E> extends CombinerPad5<E> {
 
             recordMetrics(ops);
         }finally {
-            if (node.signalPlain() != IS_COMBINER) node.signal = IS_COMBINER;
+
+            if (node.signalPlain() != IS_COMBINER) node.signal = IS_COMBINER; //avoid a volatile write
+            //if the thread waiting on this node has been signalled before
+            // however, still attempt to unpark the thread
 
             head = node;
             release();
 
             //recheck after release to handle the issue of a missed handoff signal
-            //if the waiter is unavailable after setting head = prev, the handoff signal cannot be lost
+            //if the waiter has not declared combining intent after setting head = prev,
+            // the handoff signal cannot be lost
             notifyNextWaiter(node);
+
+            // a possible optimization we can make before notifying the next waiter (if parked)
+            // is the scan the queue for threads that haven't declared intent to park
+            // and have declared intent for combining and instead make them the combiner instead
+            // to avoid stalling threads deeper in the queue, and mark the waiter's node as skipped
+            // includes extra work though and might not be worth it
 
             if (waiters != null) {
                 for (int i = 0; i < waiting; ++i) {
@@ -401,49 +421,53 @@ public class Combiner<E> extends CombinerPad5<E> {
         }
     }
 
-    private  <R> R tryCombining(byte kind, Object op, Object arg) {
+    private  <R> R enqueueAndAwait(byte kind, Object op, Object arg) {
         boolean wasInterrupted = false;
         Node node = null, succ = null;
         Thread w = Thread.currentThread();
-        int signal = 0;
-        boolean parked = false;
+
 
         try {
             boolean canCombine = false;
             int spins = this.spins;
             boolean spinning = false;
+            int signal = 0;
 
             for (;;) {
-                if (node != null && ((signal = node.signal) & 1) == 1) break;
+                if (node != null && ((signal = node.signal) & 1) == 1) break; //we've been served if the lower bit of our signal is 1
 
                 if (canCombine || succ == null || (canCombine = (signal == IS_COMBINER))) {
-                    if (tryAcquire()) {
-                        if (canCombine) return combineEnqueued(node);
+                    if (tryAcquire()) { // strong test before cas to ensure ordering
+                        if (canCombine) return combine(node);
                         else return combine(kind, op, arg);
                     }
                 }
 
                 if (succ == null) {
-                    succ = new Node();
+                    succ = new Node(); //we don't write to this node once published, instead we claim the previous node and instead write
+                    //and spin on it. This improves locality while spinning, since only the combiner might only ever invalidate our cache line
+                    // and not another waiting thread
                 } else if (node == null) {
-                    node = xchgTail(succ);
+                    node = xchgTail(succ); // exchange the node we created and claim the previous node we will write to and spin on
 
                     node.kind = kind;
                     node.arg = arg;
                     node.next = succ;
 
-                    node.operation = op; //make op and earlier writes visible
+                    node.operation = op; //declare intent to be combined, also make earlier writes visible
 
                 } else if (spinning && spins > 0) {
                     --spins;
                     Thread.onSpinWait();
                 } else if (node.status == 0) {
 
-                    if (spins > 0 && !w.isVirtual() && !UPC) {
+                    if (spins > 0 && !w.isVirtual() && !IS_UNIPROCESSOR) {
                         spinning = true;
-                    } else if (parked && canCombine) {
-                        spins = postSpins;
-                    } else {
+                    } else if (canCombine && !spinning && spins <= 0) {
+                        spinning = true;
+                        spins = postSpins; //spin briefly if spuriously woken up and we're at the head of the queue
+                        //we might get served next soon
+                    } else { //otherwise park
                         node.waiter = w;
                         node.status = WAITING;
                         spinning = false;
@@ -453,13 +477,13 @@ public class Combiner<E> extends CombinerPad5<E> {
                     LockSupport.park(this);
                     if (!wasInterrupted && Thread.interrupted()) wasInterrupted = true;
                     node.clearStatus();                    // clear status & loop top rechecked prev.signal first
-                    parked = true;
                 }
 
             }
         } finally {
             if (wasInterrupted) Thread.currentThread().interrupt();
         }
+
         return result(node);
     }
 
@@ -492,6 +516,8 @@ public class Combiner<E> extends CombinerPad5<E> {
         return false;
     }
 
+    //weak in the naming implies the ordering, not that it can fail spuriously
+    // should probably rename this
     boolean weakTryAcquire() {
         if ((int) STATE.getOpaque(this) == FREE &&  STATE.compareAndSet(this, FREE, 1)) {
             setExclusiveOwnerThread(Thread.currentThread());
@@ -571,8 +597,8 @@ public class Combiner<E> extends CombinerPad5<E> {
         if (exposeMetrics) {
             ++this._passes;
             if (ops > 0) {
-                ++this._combined;
-                _total_ops += ops;
+                ++this._combining_passes;
+                _total_combined_ops += ops;
             }
         }
     }
@@ -591,10 +617,4 @@ public class Combiner<E> extends CombinerPad5<E> {
             throw new ExceptionInInitializerError(e);
         }
     }
-
-    public static void main(String[] args) {
-        var s = ClassLayout.parseClass(Combiner.class).toPrintable();
-        System.out.println(s);
-    }
-
 }
