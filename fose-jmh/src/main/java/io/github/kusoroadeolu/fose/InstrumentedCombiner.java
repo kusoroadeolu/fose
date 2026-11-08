@@ -21,20 +21,20 @@ public class InstrumentedCombiner<E>  {
 
     //Stuff for instrumenting benchmarks
     public CombinerMetrics metrics() {
-        while (!combiner.weakTryAcquire()) Thread.onSpinWait();
+        while (!combiner.tryAcquireOpaque()) Thread.onSpinWait();
         try {
-            return new CombinerMetrics(combiner._total_combined_ops, combiner._passes, combiner._combining_passes, combiner._passes == 0 ? 0 : (double) combiner._total_combined_ops / combiner._passes);
+            return new CombinerMetrics(combiner.totalCombinedOps, combiner.passes, combiner.combiningPasses, combiner.passes == 0 ? 0 : (double) combiner.totalCombinedOps / combiner.passes);
         }finally {
             combiner.release();
         }
     }
 
     public void resetMetrics() {
-        while (!combiner.weakTryAcquire()) Thread.onSpinWait();
+        while (!combiner.tryAcquireOpaque()) Thread.onSpinWait();
         try {
-            combiner._total_combined_ops = 0;
-            combiner._passes = 0;
-            combiner._combining_passes = 0;
+            combiner.totalCombinedOps = 0;
+            combiner.passes = 0;
+            combiner.combiningPasses = 0;
         }finally {
             combiner.release();
         }

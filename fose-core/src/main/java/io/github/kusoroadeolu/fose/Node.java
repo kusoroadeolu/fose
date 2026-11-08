@@ -15,15 +15,15 @@ class Node {
     volatile int status;
     volatile byte signal;
 
-    static final int WAITING = 1;
-    static final byte FN = 1, CONSUMER = 2, BI_FN = 3, BI_CONSUMER = 4;
-    static final byte SERVED = 1, IS_COMBINER = 2, ERR_OCCURRED = 3;
+    static final int WAITING = 1; //status
+    static final byte FN = 1, CONSUMER = 2, BI_FN = 3, BI_CONSUMER = 4; //kind
+    static final byte SERVED = 1, IS_COMBINER = 2, ERR_OCCURRED = 3; //signal
 
 
     public Node() {}
 
     public Node(byte signal) {
-        this.signal = signal;
+        SIGNAL.set(this, signal);
     }
 
     void clearStatus() {

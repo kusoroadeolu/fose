@@ -20,6 +20,7 @@ class CombinerPad0 extends AbstractOwnableSynchronizer {
 class CombinerStateField extends CombinerPad0 {
     volatile int state = FREE;
     static final int FREE = 0;
+    static final int HELD = 1;
 }
 
 class CombinerPad1 extends CombinerStateField {
@@ -40,9 +41,9 @@ class CombinerFields<E> extends CombinerPad2<E> {
     Node head;
 
     //metrics
-    long _combining_passes;
-    long _passes;
-    long _total_combined_ops;
+    long combiningPasses;
+    long passes;
+    long totalCombinedOps;
 }
 
 class CombinerPad3<E> extends CombinerFields<E> {
@@ -57,21 +58,21 @@ class CombinerMiscFields<E> extends CombinerPad3<E> {
     final int maxOperationsPerPass;
     final E item;
 
-    CombinerMiscFields(E item, int spins, int postParkSpins, boolean exposeMetrics, int maxOperationsPerPass) {
+    CombinerMiscFields(E item, int spins, int postSpins, boolean exposeMetrics, int maxOperationsPerPass) {
         this.item = item;
         this.spins = spins;
-        this.postSpins = postParkSpins;
+        this.postSpins = postSpins;
         this.exposeMetrics = exposeMetrics;
         if (maxOperationsPerPass < 1) throw new IllegalArgumentException("maxOperationsPerPass must be >= 1, got " + maxOperationsPerPass);
         this.maxOperationsPerPass = maxOperationsPerPass;
     }
 }
 
-class CombinerPad5<E> extends CombinerMiscFields<E> {
+class CombinerPad4<E> extends CombinerMiscFields<E> {
     byte b0, b1, b2, b3;
     long a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16;
 
-    CombinerPad5(E item, int spins, int postParkSpins, boolean exposeMetrics, int maxOperationsPerPass) {
+    CombinerPad4(E item, int spins, int postParkSpins, boolean exposeMetrics, int maxOperationsPerPass) {
 
         super(item, spins, postParkSpins, exposeMetrics, maxOperationsPerPass);
     }
@@ -125,7 +126,7 @@ class CombinerPad5<E> extends CombinerMiscFields<E> {
  * @author kusoroadeolu
  */
 @SuppressWarnings("unchecked")
-public final class Combiner<E> extends CombinerPad5<E> {
+public final class Combiner<E> extends CombinerPad4<E> {
 
 
     /*
@@ -145,9 +146,9 @@ public final class Combiner<E> extends CombinerPad5<E> {
      * Enqueueing involves three steps:
      * 1. The thread allocates a new node (succ) for the next thread to use.
      * 2. The thread installs its allocated node as the tail and gets the
-     *    previous tail back.
-     * 3. The thread declares its intent to be combined by writing to the
-     *    previous tail, claiming that node.
+     *    previous tail back, claiming the previous tail as its node.
+     * 3. The thread declares its intent to be combined by writing its operation
+     *    to its claimed node.
      *
      * After enqueuing, a thread only ever writes to and spins on its claimed
      * node, which no other thread (except the combiner) interacts with. This
@@ -196,7 +197,7 @@ public final class Combiner<E> extends CombinerPad5<E> {
     /**
      * Default maximum number of operations a combiner can serve in one pass
      * */
-    static final int MAX_OPERATIONS_PER_PASS = 25;
+    static final int DEFAULT_MAX_OPERATIONS_PER_PASS = 25;
 
     /**
      * Is a uniprocessor system
@@ -214,10 +215,45 @@ public final class Combiner<E> extends CombinerPad5<E> {
     static final int POST_SPINS = 1 << 3;
 
     //Public constructors
+    /**
+     * Creates a combiner guarding the given shared object, using the default
+     * limit of 25 operations per combining pass.
+     *
+     * <p>After construction, the object should only be accessed through this
+     * combiner. Accessing it directly from other threads bypasses the mutual
+     * exclusion this class provides.
+     *
+     * @param item the shared object that operations are applied to
+     * @throws NullPointerException if {@code item} is null
+     */
     public Combiner(E item) {
-        this(item, MAX_OPERATIONS_PER_PASS, false);
+        this(item, DEFAULT_MAX_OPERATIONS_PER_PASS, false);
     }
 
+    /**
+     * Creates a combiner guarding the given shared object, with a custom limit
+     * on how many operations one thread may apply on behalf of others in a
+     * single combining pass.
+     *
+     * <p>The limit bounds how long a single thread can be stuck serving other
+     * threads. A higher value allows more operations to be batched per lock
+     * acquisition, which can improve throughput under heavy contention, but a
+     * thread that becomes the combiner may run for longer before returning. A
+     * lower value spreads the work more evenly across threads. Once the limit is
+     * reached, the combiner hands off to the next waiting thread.
+     *
+     * <p>After construction, the object should only be accessed through this
+     * combiner. Accessing it directly from other threads bypasses the mutual
+     * exclusion this class provides.
+     *
+     * @param item the shared object that operations are applied to
+     * @param maxOperationsPerPass the maximum number of queued operations a
+     *        combiner will apply for other threads in one pass; must be at
+     *        least 1
+     * @throws NullPointerException if {@code item} is null
+     * @throws IllegalArgumentException if {@code maxOperationsPerPass} is less
+     *         than 1
+     */
     public Combiner(E item, int maxOperationsPerPass) {
         this(item, maxOperationsPerPass, false);
     }
@@ -287,7 +323,7 @@ public final class Combiner<E> extends CombinerPad5<E> {
     //Internals & Helpers
     private <R> R submit(byte kind, Object op, Object arg) {
         Objects.requireNonNull(op);
-        if (weakTryAcquire()) return combine(kind, op, arg); //weak ttas is fine here
+        if (tryAcquireOpaque()) return combine(kind, op, arg); //unordered test before cas
         return enqueueAndAwait(kind, op, arg);
     }
 
@@ -307,7 +343,7 @@ public final class Combiner<E> extends CombinerPad5<E> {
     }
 
     @SuppressWarnings("unchecked")
-    private static <E> Object execute(int kind, Object op, Object arg, E item) {
+    private static <E> Object execute(byte kind, Object op, Object arg, E item) {
         return switch (kind) {
             case FN -> ((Function<E, ?>) op).apply(item);
             case BI_FN -> ((BiFunction<E, Object, ?>) op).apply(item, arg);
@@ -317,23 +353,25 @@ public final class Combiner<E> extends CombinerPad5<E> {
                 yield null;
             }
 
-            default -> {
+            case BI_CONSUMER -> {
                 ((BiConsumer<E, Object>) op).accept(item, arg);
                 yield null;
             }
+
+            default -> throw new AssertionError(); //shouldn't happen
         };
     }
 
     //Tries to run its own op, if it is not at the head
     //of the queue, its op has been applied, and we notify the next waiter
-    //otherwise, combine pass
+    //otherwise do a combine pass
     private  <R> R combine(Node node) {
-        Node head = this.head;
-        if (head == node) {
+        Node h = head;
+        if (h == node) {
             combineAndNotifyQueuedThreads();
         } else {
             release();
-            notifyNextWaiter(head);
+            notifyNextWaiter(h);
         }
 
         return result(node);
@@ -341,7 +379,8 @@ public final class Combiner<E> extends CombinerPad5<E> {
 
     private void notifyNextWaiter(Node node) {
         Object op = node.operation;
-        Thread w = (op != null && node.status == WAITING) ? node.waiter : null; //volatile read to node.status here ties the ordering
+        Thread w = (op != null && node.status == WAITING) ? node.waiter : null;
+        //volatile read to node.status ties the ordering
         if (w != null) {
             node.unsetWaitingStatus();
             LockSupport.unpark(w);
@@ -349,9 +388,9 @@ public final class Combiner<E> extends CombinerPad5<E> {
     }
 
     // walks the queue applying operations on the behalf of other
-    // thread until we reach a null node or reach hte max combining limit
+    // thread until we reach a null node or reach the max combining limit
     // if we come across a parked waiter we store their node in a waiter array
-    // after combining we handoff to the next eligible thread
+    // after combining we hand off to the next eligible thread
     // while also handling the issue of a lost wakeup (see below)
     // and unpark parked threads we came across during our pass
     private void combineAndNotifyQueuedThreads() {
@@ -378,7 +417,9 @@ public final class Combiner<E> extends CombinerPad5<E> {
 
                 }
 
-                if (node.status == WAITING) {
+                if (node.status == WAITING) { //check if parked, if so add to waiting array
+                    //don't unset status here, not that there's an issue with doing it, just that we might be paying
+                    //for an unneeded atomic rmw
                     if (waiters == null)
                         waiters = new Node[(int) (m - ops)];
                     waiters[waiting++] = node;
@@ -393,7 +434,7 @@ public final class Combiner<E> extends CombinerPad5<E> {
 
             if (node.signalPlain() != IS_COMBINER) node.signal = IS_COMBINER; //avoid a volatile write
             //if the thread waiting on this node has been signalled before
-            // however, still attempt to unpark the thread
+            //however, still attempt to unpark the thread after releasing the lock
 
             head = node;
             release();
@@ -412,7 +453,7 @@ public final class Combiner<E> extends CombinerPad5<E> {
             if (waiters != null) {
                 for (int i = 0; i < waiting; ++i) {
                     Node w = waiters[i];
-                    if (w.status == WAITING) {
+                    if (w.status == WAITING) { //recheck , if still waiting, then notify
                         w.unsetWaitingStatus();
                         LockSupport.unpark(w.waiter);
                     }
@@ -444,11 +485,14 @@ public final class Combiner<E> extends CombinerPad5<E> {
                 }
 
                 if (succ == null) {
-                    succ = new Node(); //we don't write to this node once published, instead we claim the previous node and instead write
-                    //and spin on it. This improves locality while spinning, since only the combiner might only ever invalidate our cache line
-                    // and not another waiting thread
+
+                    succ = new Node(); //we don't write to this node once published,
+                    // instead we claim the previous node and instead write
+                    //and spin on it. This improves locality while spinning,
+                    // since only the combiner might ever invalidate our cache line
+
                 } else if (node == null) {
-                    node = xchgTail(succ); // exchange the node we created and claim the previous node we will write to and spin on
+                    node = swapTail(succ); // swap the node we created and claim the previous node we will write to and spin on
 
                     node.kind = kind;
                     node.arg = arg;
@@ -466,7 +510,7 @@ public final class Combiner<E> extends CombinerPad5<E> {
                     } else if (canCombine && !spinning && spins <= 0) {
                         spinning = true;
                         spins = postSpins; //spin briefly if spuriously woken up and we're at the head of the queue
-                        //we might get served next soon
+                        //since we might get served soon
                     } else { //otherwise park
                         node.waiter = w;
                         node.status = WAITING;
@@ -476,12 +520,12 @@ public final class Combiner<E> extends CombinerPad5<E> {
                 } else {
                     LockSupport.park(this);
                     if (!wasInterrupted && Thread.interrupted()) wasInterrupted = true;
-                    node.clearStatus();                    // clear status & loop top rechecked prev.signal first
+                    node.clearStatus();                    // clear status & loop top to recheck prev.signal first
                 }
 
             }
         } finally {
-            if (wasInterrupted) Thread.currentThread().interrupt();
+            if (wasInterrupted) w.interrupt();
         }
 
         return result(node);
@@ -508,7 +552,7 @@ public final class Combiner<E> extends CombinerPad5<E> {
     }
 
     boolean tryAcquire() {
-        if (state == FREE && STATE.compareAndSet(this, FREE, 1)) {
+        if (state == FREE && STATE.compareAndSet(this, FREE, HELD)) {
             setExclusiveOwnerThread(Thread.currentThread());
             return true;
         }
@@ -516,10 +560,8 @@ public final class Combiner<E> extends CombinerPad5<E> {
         return false;
     }
 
-    //weak in the naming implies the ordering, not that it can fail spuriously
-    // should probably rename this
-    boolean weakTryAcquire() {
-        if ((int) STATE.getOpaque(this) == FREE &&  STATE.compareAndSet(this, FREE, 1)) {
+    boolean tryAcquireOpaque() {
+        if ((int) STATE.getOpaque(this) == FREE &&  STATE.compareAndSet(this, FREE, HELD)) {
             setExclusiveOwnerThread(Thread.currentThread());
             return true;
         }
@@ -532,7 +574,7 @@ public final class Combiner<E> extends CombinerPad5<E> {
         state = 0;
     }
 
-    private Node xchgTail(Node node) {
+    private Node swapTail(Node node) {
         return (Node) TAIL.getAndSet(this, node);
     }
 
@@ -595,10 +637,10 @@ public final class Combiner<E> extends CombinerPad5<E> {
 
     private void recordMetrics(int ops) {
         if (exposeMetrics) {
-            ++this._passes;
+            ++this.passes;
             if (ops > 0) {
-                ++this._combining_passes;
-                _total_combined_ops += ops;
+                ++this.combiningPasses;
+                totalCombinedOps += ops;
             }
         }
     }

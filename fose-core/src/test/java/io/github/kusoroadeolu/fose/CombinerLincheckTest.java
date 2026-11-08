@@ -10,6 +10,9 @@ import java.util.List;
 import java.util.Queue;
 
 public class CombinerLincheckTest {
+    private static final int INVOCATIONS = 100;
+
+
     static class Adder {
         int i;
 
@@ -38,10 +41,9 @@ public class CombinerLincheckTest {
         }
     }
 
-    private static final int INVOCATIONS = 32;
 
     @Test
-    public void assertHappensBeforeVisibility() {
+    public void sanityConcurrentTest() {
         Lincheck.runConcurrentTest(INVOCATIONS, () -> {
             final Combiner<Adder> c = CombinerTestFactory.create(new Adder());
             Runnable task = () -> c.accept(Adder::add);
@@ -59,7 +61,8 @@ public class CombinerLincheckTest {
             }catch (InterruptedException e) {
                 throw new AssertionError(e);
             }
-            Assertions.assertEquals(3, c.apply(Adder::sum));
+            Assertions.assertEquals(3, c.apply(Adder::sum)); //ensure we get 3 back
+            //this is really just a sanity test
         });
     }
 

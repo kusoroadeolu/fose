@@ -39,7 +39,7 @@ If you run into any correctness issues or have more stress tests to contribute. 
 <dependency>
   <groupId>io.github.kusoroadeolu</groupId>
   <artifactId>fose-core</artifactId>
-  <version>0.1.0</version>
+  <version>0.2.1</version>
 </dependency>
 ```
 
@@ -53,6 +53,7 @@ There are two workloads we benchmark against:
 
 
 These numbers were gotten on a machine with an Intel i5 processor with 4 physical cores and 8 logical CPUs on a Windows OS.
+Note that these numbers may vary per machine.
 
 These results are mean latency per operation in nanoseconds (lower is better).
 
