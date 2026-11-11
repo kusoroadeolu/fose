@@ -51,8 +51,6 @@
         </license>
     </licenses>
 
-    <!-- The child.* attributes stop Maven from appending the module name
-         (e.g. /fose-core) to these URLs in child modules' published POMs. -->
     <scm child.scm.connection.inherit.append.path="false"
          child.scm.developerConnection.inherit.append.path="false"
          child.scm.url.inherit.append.path="false">
@@ -107,7 +105,6 @@
     </build>
 
     <profiles>
-        <!-- Release with: mvn -Prelease clean deploy -->
         <profile>
             <id>release</id>
             <build>

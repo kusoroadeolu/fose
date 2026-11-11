@@ -18,8 +18,8 @@ import java.util.function.Consumer;
 @Fork(value = 3, jvmArgs = {Args.INITIAL_HEAP_SIZE, Args.MAX_HEAP_SIZE, Args.GC_TYPE})
 @Warmup(iterations = 5, time = 1)
 @Measurement(iterations = 5, time = 1)
-@BenchmarkMode(Mode.Throughput)
-@OutputTimeUnit(TimeUnit.MICROSECONDS)
+@BenchmarkMode(Mode.SampleTime)
+@OutputTimeUnit(TimeUnit.NANOSECONDS)
 public class CacheLineBenchmark {
 
     //More or less the structure we're working on
@@ -116,7 +116,7 @@ public class CacheLineBenchmark {
         @Param({"5"})
         public int lines;
 
-        @Param({"0"})
+        @Param({"100"})
         public int work;
 
 
